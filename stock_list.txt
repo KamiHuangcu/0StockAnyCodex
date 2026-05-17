@@ -1,0 +1,182 @@
+# ============================================================
+# Yahoo 台股清單掃描工具 Pro - stock_list.txt
+# 格式：
+# 代號,名稱,類型
+#
+# 類型：
+# stock = 個股，程式會自動嘗試 .TW / .TWO
+# index = Yahoo 已有的指數或完整代號，例如 ^TWII、^TWOII、SEC.TW
+#
+# 使用方式：
+# 前面沒有 # = 會掃描
+# 前面有 # = 關閉，不掃描
+#
+# 注意：
+# 下面很多「上市/上櫃類股、電子產業細項」是你提供的分類名稱。
+# 不是每一個分類在 Yahoo Finance 都一定有可直接抓 K 線的單一代號。
+# 我有確認過或常見的 Yahoo 代號才直接填入。
+# 尚未確認的項目先用 TODO_ 開頭關閉，避免誤開後掃描失敗。
+# 之後如果找到正確 Yahoo 代號，把 TODO_xxx 換成正確代號並移除 # 即可。
+# ============================================================
+
+
+# ============================================================
+# 個股清單：預設打開
+# ============================================================
+#2330,台積電,stock
+#2454,聯發科,stock
+2308,台達電,stock
+3711,日月光投控,stock
+6285,啟碁,stock
+2337,旺宏,stock
+8299,群聯,stock
+#3605,宏致,stock
+3532,台勝科,stock
+2379,瑞昱,stock
+6770,力積電,stock
+3037,欣興,stock
+3189,景碩,stock
+2408,南亞科,stock
+3035,智原,stock
+2344,華邦電,stock
+4958,臻鼎-KY,stock
+6239,力成,stock
+3260,威剛,stock
+00830,國泰費城半導體,stock
+00981A,主動統一台股增長,stock
+
+# ============================================================
+# 大盤指數：預設打開
+# ============================================================
+^TWII,上市加權指數,index
+^TWOII,上櫃指數,index
+
+
+# ============================================================
+# 上市類股：以下全部預設關閉
+# ============================================================
+# ^TWII,大盤指數走勢,index
+# TODO_TSE_INDUSTRY,類股指數走勢,index
+# TODO_TSE_CEMENT,水泥,index
+# TODO_TSE_FOOD,食品,index
+# TODO_TSE_PLASTIC,塑膠,index
+# TODO_TSE_TEXTILE,紡織,index
+# TODO_TSE_ELECTRIC_MACHINERY,電機機械,index
+# TODO_TSE_ELECTRIC_CABLE,電器電纜,index
+# TODO_TSE_CHEMICAL,化學,index
+# TODO_TSE_BIOTECH,生技,index
+# TODO_TSE_GLASS,玻璃,index
+# TODO_TSE_PAPER,造紙,index
+# TODO_TSE_STEEL,鋼鐵,index
+# TODO_TSE_RUBBER,橡膠,index
+# TODO_TSE_AUTO,汽車,index
+ SEC.TW,半導體,index
+# TODO_TSE_COMPUTER_PERIPHERAL,電腦週邊,index
+# TODO_TSE_OPTOELECTRONICS,光電,index
+# TODO_TSE_COMMUNICATION_NETWORK,通訊網路,index
+# TODO_TSE_ELECTRONIC_COMPONENTS,電子零組件,index
+# TODO_TSE_ELECTRONIC_CHANNEL,電子通路,index
+# TODO_TSE_INFORMATION_SERVICE,資訊服務,index
+# TODO_TSE_OTHER_ELECTRONICS,其他電子,index
+# TODO_TSE_BUILDING_MATERIAL_CONSTRUCTION,營建,index
+# TODO_TSE_SHIPPING,航運,index
+# TODO_TSE_TOURISM,觀光餐旅,index
+# ^TFNI,金融業,index
+# TODO_TSE_TRADING_CONSUMER_GOODS,貿易百貨,index
+# TODO_TSE_OIL_GAS_ELECTRICITY,油電燃氣,index
+# TODO_TSE_TDR,存託憑證,index
+# TODO_TSE_ETF,ETF,index
+# TODO_TSE_BENEFICIARY_SECURITIES,受益證券,index
+# TODO_TSE_ETN,ETN,index
+# TODO_TSE_OTHERS,其他,index
+# TODO_TSE_CALL_WARRANT,市認購,index
+# TODO_TSE_PUT_WARRANT,市認售,index
+# TODO_TSE_INDEX_PRODUCTS,指數類,index
+# TODO_TSE_BULL_CERTIFICATE,市牛證,index
+# TODO_TSE_BEAR_CERTIFICATE,市熊證,index
+# TODO_TSE_SPORTS_LEISURE,運動休閒,index
+# TODO_TSE_HOME_LIFE,居家生活,index
+# TODO_TSE_DIGITAL_CLOUD,數位雲端,index
+
+
+# ============================================================
+# 上櫃類股：以下全部預設關閉
+# ============================================================
+# ^TWOII,櫃檯指數走勢,index
+# TODO_OTC_FOOD,櫃食品,index
+# TODO_OTC_PLASTIC,櫃塑膠,index
+# TODO_OTC_TEXTILE,櫃紡織,index
+# TODO_OTC_ELECTRIC_MACHINERY,櫃電機,index
+# TODO_OTC_ELECTRIC_CABLE,櫃電器電纜,index
+# TODO_OTC_CHEMICAL,櫃化學,index
+# TODO_OTC_BIOTECH,櫃生技,index
+# TODO_OTC_STEEL,櫃鋼鐵,index
+# TODO_OTC_SEMICONDUCTOR,櫃半導體,index
+# TODO_OTC_COMPUTER_PERIPHERAL,櫃電腦週邊,index
+# TODO_OTC_OPTOELECTRONICS,櫃光電,index
+# TODO_OTC_COMMUNICATION_NETWORK,櫃通訊網路,index
+# TODO_OTC_ELECTRONIC_COMPONENTS,櫃電子零組件,index
+# TODO_OTC_ELECTRONIC_CHANNEL,櫃電子通路,index
+# TODO_OTC_INFORMATION_SERVICE,櫃資訊服務,index
+# TODO_OTC_OTHER_ELECTRONICS,櫃其他電子,index
+# TODO_OTC_BUILDING_MATERIAL_CONSTRUCTION,櫃營建,index
+# TODO_OTC_SHIPPING,櫃航運,index
+# TODO_OTC_TOURISM,櫃觀光餐旅,index
+# TODO_OTC_FINANCIAL,櫃金融,index
+# TODO_OTC_HOME_LIFE,櫃居家生活,index
+# TODO_OTC_OIL_GAS_ELECTRICITY,櫃油電燃氣,index
+# TODO_OTC_CULTURAL_CREATIVE,櫃文化創意,index
+# TODO_OTC_AGRICULTURAL_TECHNOLOGY,櫃農業科技業,index
+# TODO_OTC_ECOMMERCE,櫃電子商務,index
+# TODO_OTC_OTHERS,櫃其他,index
+# TODO_OTC_CORPORATE_BOND,櫃公司債,index
+# TODO_OTC_ETF,櫃ETF,index
+# TODO_OTC_ETN,櫃ETN,index
+# TODO_OTC_CALL_WARRANT,櫃認購,index
+# TODO_OTC_PUT_WARRANT,櫃認售,index
+# TODO_OTC_INDEX_PRODUCTS,櫃指數類,index
+# TODO_OTC_BULL_CERTIFICATE,櫃牛證,index
+# TODO_OTC_SPORTS_LEISURE,櫃運動休閒,index
+# TODO_OTC_GREEN_ENVIRONMENTAL,櫃綠能環保,index
+
+
+# ============================================================
+# 電子產業細項：以下全部預設關閉
+# 這些多半是分類頁或概念分類，不一定有單一 Yahoo K 線指數代號。
+# 若你要掃描這些分類，比較穩的方式是整理成該分類的一籃子個股清單。
+# ============================================================
+# TODO_ELEC_FACILITY_ENGINEERING,設備或廠務工程,index
+# TODO_ELEC_EQUIPMENT_TRADING,電子設備買賣,index
+# TODO_ELEC_OTHER_COMPONENTS,其他零組件,index
+# TODO_ELEC_PC_NB_TABLET,PC/NB/平板,index
+# TODO_ELEC_OTHER_ELECTRONICS_PARTS,其他電子或零件,index
+# TODO_ELEC_ASSEMBLY_OEM,組裝代工,index
+# TODO_ELEC_IC_MANUFACTURING,IC生產製造,index
+# TODO_ELEC_OTHER_OPTOELECTRONICS,其他光電,index
+# TODO_ELEC_3C_RETAIL,3C賣場,index
+# TODO_ELEC_MOTHERBOARD,主機板,index
+# TODO_ELEC_CONSUMER_ELECTRONICS,消費電子或電器,index
+# TODO_ELEC_OTHER_COMPUTER_PERIPHERAL,其他電腦週邊,index
+# TODO_ELEC_MOBILE_RELATED,手機相關,index
+# TODO_ELEC_WEBSITE_ECOMMERCE,網站經營/電商,index
+# TODO_ELEC_COMPONENT_TRADING,電子組件買賣,index
+# TODO_ELEC_SOFTWARE_DESIGN,軟體設計,index
+# TODO_ELEC_SYSTEM_INTEGRATION,系統整合,index
+# TODO_ELEC_NETWORK_EQUIPMENT_COMPONENTS,網通設備組件,index
+# TODO_ELEC_COMPUTER_ACCESSORIES,電腦週邊配件,index
+# TODO_ELEC_GAME_SOFTWARE,遊戲軟體,index
+# TODO_ELEC_IC_DESIGN_SERVICE,IC設計服務,index
+# TODO_ELEC_OPTOELECTRONIC_EQUIPMENT,光電設備,index
+# TODO_ELEC_TELECOM_SERVICE,電信服務,index
+# TODO_ELEC_LED,LED,index
+# TODO_ELEC_SOLAR,太陽能,index
+# TODO_ELEC_PCB,PCB,index
+# TODO_ELEC_CASE,機殼,index
+# TODO_ELEC_CONNECTOR_RELATED,電子連接相關,index
+# TODO_ELEC_PANEL,面板業,index
+# TODO_ELEC_OTHER_NETWORKING,其他網通,index
+# TODO_ELEC_BATTERY_POWER,電池或電源,index
+# TODO_ELEC_OPTICAL_COMPONENT_ASSEMBLY,光學元件或組裝,index
+# TODO_ELEC_PASSIVE_COMPONENTS,被動元件,index
+# TODO_ELEC_INDUSTRIAL_COMPUTER,工業電腦,index
+# TODO_ELEC_SECURITY_MONITORING,安全監控,index
