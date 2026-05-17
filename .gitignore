@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local virtual environments
+.venv/
+.venv-build/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Runtime/generated data
+stock_data.db
+stock_export.csv
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local temporary/listing files
+filelist.txt
+file.list
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
