@@ -13,6 +13,18 @@ env/
 build/
 dist/
 *.spec
+*.exe
+*.pkg
+*.toc
+*.manifest
+warn-*.txt
+xref-*.html
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyinstaller/
 
 # Runtime/generated data
 stock_data.db
