@@ -64,7 +64,116 @@ MARKET_INDEXES = []
 
 INTERVALS = ["1m", "5m", "30m", "1d", "1wk"]
 
+INDICATOR_DB_COLUMNS = [
+    ("record_type", "TEXT"),
+    ("symbol", "TEXT"),
+    ("base_code", "TEXT"),
+    ("name", "TEXT"),
+    ("item_type", "TEXT"),
+    ("interval_type", "TEXT"),
+    ("bar_time", "TEXT"),
+    ("open_price", "REAL"),
+    ("high_price", "REAL"),
+    ("low_price", "REAL"),
+    ("close_price", "REAL"),
+    ("volume", "REAL"),
+    ("scan_time", "TEXT"),
+    ("change_pct", "REAL"),
+    ("ma5", "REAL"),
+    ("ma10", "REAL"),
+    ("ma20", "REAL"),
+    ("ma60", "REAL"),
+    ("ma120", "REAL"),
+    ("ma_slope_20", "REAL"),
+    ("bias5", "REAL"),
+    ("bias10", "REAL"),
+    ("bias20", "REAL"),
+    ("bias60", "REAL"),
+    ("bias120", "REAL"),
+    ("bias5_chg", "REAL"),
+    ("bias10_chg", "REAL"),
+    ("bias20_chg", "REAL"),
+    ("bias60_chg", "REAL"),
+    ("bias120_chg", "REAL"),
+    ("rsi14", "REAL"),
+    ("k9", "REAL"),
+    ("d9", "REAL"),
+    ("j9", "REAL"),
+    ("williams_r14", "REAL"),
+    ("dif", "REAL"),
+    ("macd", "REAL"),
+    ("osc", "REAL"),
+    ("bb_upper", "REAL"),
+    ("bb_middle", "REAL"),
+    ("bb_lower", "REAL"),
+    ("bb_mid20", "REAL"),
+    ("bb_upper20", "REAL"),
+    ("bb_lower20", "REAL"),
+    ("bb_width", "REAL"),
+    ("price_loc_bb", "REAL"),
+    ("atr14", "REAL"),
+    ("vol_std_score", "REAL"),
+    ("adx14", "REAL"),
+    ("plus_di", "REAL"),
+    ("minus_di", "REAL"),
+    ("plus_di14", "REAL"),
+    ("minus_di14", "REAL"),
+    ("volume_ma5", "REAL"),
+    ("volume_ratio", "REAL"),
+    ("vwap", "REAL"),
+    ("obv", "REAL"),
+    ("vzo", "REAL"),
+    ("vzo14", "REAL"),
+    ("mfi14", "REAL"),
+    ("money_flow_index", "REAL"),
+    ("vpt", "REAL"),
+    ("volume_price_trend", "REAL"),
+    ("day_range_pos", "REAL"),
+    ("high_52w", "REAL"),
+    ("low_52w", "REAL"),
+    ("dist_high_52w_pct", "REAL"),
+    ("dist_low_52w_pct", "REAL"),
+    ("beta20", "REAL"),
+    ("corr20", "REAL"),
+    ("relative_strength_pct", "REAL"),
+    ("stock_index_ratio", "REAL"),
+    ("gap_pct", "REAL"),
+    ("tail_ratio", "REAL"),
+    ("upper_tail_ratio", "REAL"),
+    ("lower_tail_ratio", "REAL"),
+    ("short_term_score", "REAL"),
+    ("note", "TEXT"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+]
+
 stop_scan = False
+
+
+def ensure_indicator_table(cur):
+    column_defs = ",\n            ".join(
+        f"{name} {column_type}" for name, column_type in INDICATOR_DB_COLUMNS
+    )
+
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS k_bar_indicators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {column_defs},
+            UNIQUE(symbol, interval_type, bar_time)
+        )
+    """)
+
+    cur.execute("PRAGMA table_info(k_bar_indicators)")
+    existing_columns = {row[1] for row in cur.fetchall()}
+
+    for name, column_type in INDICATOR_DB_COLUMNS:
+        if name not in existing_columns:
+            cur.execute(f"ALTER TABLE k_bar_indicators ADD COLUMN {name} {column_type}")
+
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_k_bar_indicators_unique
+        ON k_bar_indicators (symbol, interval_type, bar_time)
+    """)
 
 
 def init_db():
@@ -89,6 +198,8 @@ def init_db():
             UNIQUE(symbol, interval_type, bar_time)
         )
     """)
+
+    ensure_indicator_table(cur)
 
     conn.commit()
     conn.close()
@@ -345,6 +456,21 @@ def calculate_beta_corr(stock_returns, index_returns, period, index):
     corr = None if var_m == 0 or var_s == 0 else cov / math.sqrt(var_s * var_m)
 
     return beta, corr
+
+
+def add_indicator_aliases(row):
+    k9 = row.get("k9")
+    d9 = row.get("d9")
+    row["j9"] = None if k9 is None or d9 is None else (3 * k9) - (2 * d9)
+
+    row["bb_upper"] = row.get("bb_upper20")
+    row["bb_middle"] = row.get("bb_mid20")
+    row["bb_lower"] = row.get("bb_lower20")
+    row["plus_di"] = row.get("plus_di14")
+    row["minus_di"] = row.get("minus_di14")
+    row["vzo"] = row.get("vzo14")
+    row["mfi14"] = row.get("money_flow_index")
+    row["vpt"] = row.get("volume_price_trend")
 
 
 def calculate_indicators(rows, index_return_map=None, index_close_map=None):
@@ -701,6 +827,7 @@ def calculate_indicators(rows, index_return_map=None, index_close_map=None):
             score -= 1
 
         row["short_term_score"] = score
+        add_indicator_aliases(row)
 
     return rows
 
@@ -811,8 +938,74 @@ def get_all_rows_with_indicators():
     return all_rows
 
 
+def indicator_db_value(row, column_name, timestamp):
+    source_map = {
+        "record_type": "interval_type",
+        "open_price": "open",
+        "high_price": "high",
+        "low_price": "low",
+        "close_price": "close",
+    }
+
+    if column_name == "note":
+        return "Network Ping Test data"
+
+    if column_name in ("created_at", "updated_at"):
+        return timestamp
+
+    return row.get(source_map.get(column_name, column_name))
+
+
+def save_indicator_rows(rows):
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+
+    ensure_indicator_table(cur)
+
+    cur.execute("""
+        DELETE FROM k_bar_indicators
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM k_bars
+            WHERE k_bars.symbol = k_bar_indicators.symbol
+              AND k_bars.interval_type = k_bar_indicators.interval_type
+              AND k_bars.bar_time = k_bar_indicators.bar_time
+        )
+    """)
+
+    if rows:
+        columns = [name for name, _ in INDICATOR_DB_COLUMNS]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        placeholders = ", ".join(["?"] * len(columns))
+        column_names = ", ".join(columns)
+        update_columns = [
+            name for name in columns
+            if name not in ("symbol", "interval_type", "bar_time", "created_at")
+        ]
+        update_sql = ", ".join(f"{name} = excluded.{name}" for name in update_columns)
+
+        cur.executemany(
+            f"""
+            INSERT INTO k_bar_indicators ({column_names})
+            VALUES ({placeholders})
+            ON CONFLICT(symbol, interval_type, bar_time)
+            DO UPDATE SET {update_sql}
+            """,
+            [
+                [indicator_db_value(row, column_name, now) for column_name in columns]
+                for row in rows
+            ],
+        )
+
+    conn.commit()
+    conn.close()
+
+    return len(rows)
+
+
 def export_one_csv():
     rows = get_all_rows_with_indicators()
+    indicator_count = save_indicator_rows(rows)
 
     headers = [
         "record_type",
@@ -847,6 +1040,7 @@ def export_one_csv():
         "rsi14",
         "k9",
         "d9",
+        "j9",
         "williams_r14",
         "dif",
         "macd",
@@ -859,15 +1053,23 @@ def export_one_csv():
         "vzo14",
         "money_flow_index",
         "volume_price_trend",
+        "vzo",
+        "mfi14",
+        "vpt",
         "day_range_pos",
         "bb_mid20",
         "bb_upper20",
         "bb_lower20",
+        "bb_upper",
+        "bb_middle",
+        "bb_lower",
         "bb_width",
         "price_loc_bb",
         "atr14",
         "plus_di14",
         "minus_di14",
+        "plus_di",
+        "minus_di",
         "adx14",
         "high_52w",
         "low_52w",
@@ -924,6 +1126,7 @@ def export_one_csv():
                 round_value(row.get("rsi14")),
                 round_value(row.get("k9")),
                 round_value(row.get("d9")),
+                round_value(row.get("j9")),
                 round_value(row.get("williams_r14")),
                 round_value(row.get("dif")),
                 round_value(row.get("macd")),
@@ -936,15 +1139,23 @@ def export_one_csv():
                 round_value(row.get("vzo14")),
                 round_value(row.get("money_flow_index")),
                 round_value(row.get("volume_price_trend")),
+                round_value(row.get("vzo")),
+                round_value(row.get("mfi14")),
+                round_value(row.get("vpt")),
                 round_value(row.get("day_range_pos")),
                 round_value(row.get("bb_mid20")),
                 round_value(row.get("bb_upper20")),
                 round_value(row.get("bb_lower20")),
+                round_value(row.get("bb_upper")),
+                round_value(row.get("bb_middle")),
+                round_value(row.get("bb_lower")),
                 round_value(row.get("bb_width")),
                 round_value(row.get("price_loc_bb")),
                 round_value(row.get("atr14")),
                 round_value(row.get("plus_di14")),
                 round_value(row.get("minus_di14")),
+                round_value(row.get("plus_di")),
+                round_value(row.get("minus_di")),
                 round_value(row.get("adx14")),
                 round_value(row.get("high_52w")),
                 round_value(row.get("low_52w")),
@@ -963,7 +1174,7 @@ def export_one_csv():
                 "Network Ping Test 資料",
             ])
 
-    return EXPORT_FILE, len(rows)
+    return EXPORT_FILE, len(rows), indicator_count
 
 
 def display_item_type(item_type):
@@ -1085,9 +1296,10 @@ def update_all():
         symbol, name, interval_type, bar_time, close_price, scan_time = row
         log(f"{symbol} {name} | {interval_type} | {bar_time} | value {round_value(close_price)}")
 
-    export_file, row_count = export_one_csv()
+    export_file, row_count, indicator_count = export_one_csv()
 
     log("")
+    log(f"SQLite k_bar_indicators updated: {indicator_count} rows")
     log(f"CSV 已輸出：{export_file}，共 {row_count} 筆 Network Ping Test 資料")
     log(f"完成：成功 {success} 筆，失敗 {fail} 筆")
 
@@ -1129,4 +1341,3 @@ result_text = tk.Text(root, width=150, height=40)
 result_text.pack(padx=10, pady=10)
 
 root.mainloop()
-
