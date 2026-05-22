@@ -64,6 +64,14 @@ MARKET_INDEXES = []
 
 INTERVALS = ["1m", "5m", "30m", "1d", "1wk"]
 
+TIMEFRAME_METADATA = {
+    "1m": {"interval_minutes": 1, "bars_per_day": 270, "sort_order": 1},
+    "5m": {"interval_minutes": 5, "bars_per_day": 54, "sort_order": 2},
+    "30m": {"interval_minutes": 30, "bars_per_day": 9, "sort_order": 3},
+    "1d": {"interval_minutes": 1440, "bars_per_day": 1, "sort_order": 4},
+    "1wk": {"interval_minutes": 10080, "bars_per_day": 1, "sort_order": 5},
+}
+
 INDICATOR_DB_COLUMNS = [
     ("record_type", "TEXT"),
     ("symbol", "TEXT"),
@@ -142,12 +150,73 @@ INDICATOR_DB_COLUMNS = [
     ("upper_tail_ratio", "REAL"),
     ("lower_tail_ratio", "REAL"),
     ("short_term_score", "REAL"),
+    ("future_1d_return", "REAL"),
+    ("future_3d_return", "REAL"),
+    ("max_upside_5d", "REAL"),
+    ("drawdown_5d", "REAL"),
+    ("buy_signal", "INTEGER"),
+    ("entry_price", "REAL"),
+    ("ai_signal_score", "REAL"),
+    ("label_ready", "INTEGER"),
+    ("label_horizon_bars_1d", "INTEGER"),
+    ("label_horizon_bars_3d", "INTEGER"),
+    ("label_horizon_bars_5d", "INTEGER"),
     ("note", "TEXT"),
     ("created_at", "TEXT"),
     ("updated_at", "TEXT"),
 ]
 
+AI_LABEL_COLUMNS = [
+    ("future_1d_return", "REAL"),
+    ("future_3d_return", "REAL"),
+    ("max_upside_5d", "REAL"),
+    ("drawdown_5d", "REAL"),
+    ("buy_signal", "INTEGER"),
+    ("entry_price", "REAL"),
+    ("ai_signal_score", "REAL"),
+    ("label_ready", "INTEGER"),
+    ("label_horizon_bars_1d", "INTEGER"),
+    ("label_horizon_bars_3d", "INTEGER"),
+    ("label_horizon_bars_5d", "INTEGER"),
+]
+
+META_COLUMN_NAMES = {
+    "record_type",
+    "symbol",
+    "base_code",
+    "name",
+    "item_type",
+    "interval_type",
+    "bar_time",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "volume",
+    "scan_time",
+    "note",
+    "created_at",
+    "updated_at",
+}
+
+AI_LABEL_COLUMN_NAMES = {name for name, _ in AI_LABEL_COLUMNS}
+
+QUANT_FEATURE_COLUMNS = [
+    (name, column_type)
+    for name, column_type in INDICATOR_DB_COLUMNS
+    if name not in META_COLUMN_NAMES and name not in AI_LABEL_COLUMN_NAMES
+]
+
 stop_scan = False
+
+
+def ensure_columns(cur, table_name, columns):
+    cur.execute(f"PRAGMA table_info({table_name})")
+    existing_columns = {row[1] for row in cur.fetchall()}
+
+    for name, column_type in columns:
+        if name not in existing_columns:
+            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}")
 
 
 def ensure_indicator_table(cur):
@@ -166,13 +235,200 @@ def ensure_indicator_table(cur):
     cur.execute("PRAGMA table_info(k_bar_indicators)")
     existing_columns = {row[1] for row in cur.fetchall()}
 
-    for name, column_type in INDICATOR_DB_COLUMNS:
-        if name not in existing_columns:
-            cur.execute(f"ALTER TABLE k_bar_indicators ADD COLUMN {name} {column_type}")
+    ensure_columns(cur, "k_bar_indicators", INDICATOR_DB_COLUMNS)
 
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_k_bar_indicators_unique
         ON k_bar_indicators (symbol, interval_type, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_interval_time
+        ON k_bar_indicators (interval_type, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_buy_signal
+        ON k_bar_indicators (buy_signal, interval_type, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_future_1d
+        ON k_bar_indicators (future_1d_return)
+    """)
+
+
+def ensure_quant_schema(cur):
+    feature_defs = ",\n            ".join(
+        f"{name} {column_type}" for name, column_type in QUANT_FEATURE_COLUMNS
+    )
+    label_defs = ",\n            ".join(
+        f"{name} {column_type}" for name, column_type in AI_LABEL_COLUMNS
+    )
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS q_instruments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL UNIQUE,
+            base_code TEXT,
+            name TEXT,
+            item_type TEXT,
+            market TEXT,
+            updated_at TEXT
+        )
+    """)
+    ensure_columns(cur, "q_instruments", [
+        ("base_code", "TEXT"),
+        ("name", "TEXT"),
+        ("item_type", "TEXT"),
+        ("market", "TEXT"),
+        ("updated_at", "TEXT"),
+    ])
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS q_timeframes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            interval_type TEXT NOT NULL UNIQUE,
+            interval_minutes INTEGER,
+            bars_per_day INTEGER,
+            keep_days INTEGER,
+            export_days INTEGER,
+            sort_order INTEGER
+        )
+    """)
+    ensure_columns(cur, "q_timeframes", [
+        ("interval_minutes", "INTEGER"),
+        ("bars_per_day", "INTEGER"),
+        ("keep_days", "INTEGER"),
+        ("export_days", "INTEGER"),
+        ("sort_order", "INTEGER"),
+    ])
+
+    for interval_type in INTERVALS:
+        meta = TIMEFRAME_METADATA[interval_type]
+        cur.execute("""
+            INSERT INTO q_timeframes
+            (interval_type, interval_minutes, bars_per_day, keep_days, export_days, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(interval_type) DO UPDATE SET
+                interval_minutes = excluded.interval_minutes,
+                bars_per_day = excluded.bars_per_day,
+                keep_days = excluded.keep_days,
+                export_days = excluded.export_days,
+                sort_order = excluded.sort_order
+        """, (
+            interval_type,
+            meta["interval_minutes"],
+            meta["bars_per_day"],
+            KEEP_DAYS[interval_type],
+            EXPORT_DAYS[interval_type],
+            meta["sort_order"],
+        ))
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS q_price_bars (
+            instrument_id INTEGER NOT NULL,
+            timeframe_id INTEGER NOT NULL,
+            bar_time TEXT NOT NULL,
+            open_price REAL,
+            high_price REAL,
+            low_price REAL,
+            close_price REAL,
+            volume REAL,
+            scan_time TEXT,
+            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+        )
+    """)
+    ensure_columns(cur, "q_price_bars", [
+        ("open_price", "REAL"),
+        ("high_price", "REAL"),
+        ("low_price", "REAL"),
+        ("close_price", "REAL"),
+        ("volume", "REAL"),
+        ("scan_time", "TEXT"),
+    ])
+
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS q_indicator_features (
+            instrument_id INTEGER NOT NULL,
+            timeframe_id INTEGER NOT NULL,
+            bar_time TEXT NOT NULL,
+            {feature_defs},
+            updated_at TEXT,
+            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+        )
+    """)
+    ensure_columns(cur, "q_indicator_features", QUANT_FEATURE_COLUMNS + [("updated_at", "TEXT")])
+
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS q_ai_labels (
+            instrument_id INTEGER NOT NULL,
+            timeframe_id INTEGER NOT NULL,
+            bar_time TEXT NOT NULL,
+            {label_defs},
+            created_at TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+        )
+    """)
+    ensure_columns(cur, "q_ai_labels", AI_LABEL_COLUMNS + [
+        ("created_at", "TEXT"),
+        ("updated_at", "TEXT"),
+    ])
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_q_price_bars_timeframe_time
+        ON q_price_bars (timeframe_id, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_q_price_bars_instrument_time
+        ON q_price_bars (instrument_id, timeframe_id, bar_time DESC)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_q_features_timeframe_time
+        ON q_indicator_features (timeframe_id, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_q_labels_buy_signal
+        ON q_ai_labels (buy_signal, timeframe_id, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_q_labels_future_1d
+        ON q_ai_labels (future_1d_return)
+    """)
+
+    feature_select = ",\n            ".join(f"f.{name}" for name, _ in QUANT_FEATURE_COLUMNS)
+    label_select = ",\n            ".join(f"l.{name}" for name, _ in AI_LABEL_COLUMNS)
+
+    cur.execute("DROP VIEW IF EXISTS v_quant_ai_dataset")
+    cur.execute(f"""
+        CREATE VIEW v_quant_ai_dataset AS
+        SELECT
+            i.symbol,
+            i.base_code,
+            i.name,
+            i.item_type,
+            i.market,
+            t.interval_type,
+            t.interval_minutes,
+            t.bars_per_day,
+            b.bar_time,
+            b.open_price,
+            b.high_price,
+            b.low_price,
+            b.close_price,
+            b.volume,
+            b.scan_time,
+            {feature_select},
+            {label_select}
+        FROM q_price_bars b
+        JOIN q_instruments i ON i.id = b.instrument_id
+        JOIN q_timeframes t ON t.id = b.timeframe_id
+        LEFT JOIN q_indicator_features f
+            ON f.instrument_id = b.instrument_id
+           AND f.timeframe_id = b.timeframe_id
+           AND f.bar_time = b.bar_time
+        LEFT JOIN q_ai_labels l
+            ON l.instrument_id = b.instrument_id
+           AND l.timeframe_id = b.timeframe_id
+           AND l.bar_time = b.bar_time
     """)
 
 
@@ -198,8 +454,21 @@ def init_db():
             UNIQUE(symbol, interval_type, bar_time)
         )
     """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bars_symbol_interval_time
+        ON k_bars (symbol, interval_type, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bars_interval_time
+        ON k_bars (interval_type, bar_time)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bars_item_type
+        ON k_bars (item_type, symbol)
+    """)
 
     ensure_indicator_table(cur)
+    ensure_quant_schema(cur)
 
     conn.commit()
     conn.close()
@@ -471,6 +740,120 @@ def add_indicator_aliases(row):
     row["vzo"] = row.get("vzo14")
     row["mfi14"] = row.get("money_flow_index")
     row["vpt"] = row.get("volume_price_trend")
+
+
+def pct_from_close(close, future_value):
+    if close in (None, 0) or future_value is None:
+        return None
+
+    return ((future_value - close) / close) * 100
+
+
+def calculate_ai_signal_score(row):
+    close = row.get("close")
+    score = 0
+
+    if close is not None and row.get("ma20") is not None and close > row["ma20"]:
+        score += 1
+
+    if row.get("ma5") is not None and row.get("ma20") is not None and row["ma5"] > row["ma20"]:
+        score += 1
+
+    if row.get("ma_slope_20") is not None and row["ma_slope_20"] > 0:
+        score += 1
+
+    if row.get("rsi14") is not None:
+        if 45 <= row["rsi14"] <= 72:
+            score += 1
+        elif row["rsi14"] > 78 or row["rsi14"] < 30:
+            score -= 1
+
+    if row.get("k9") is not None and row.get("d9") is not None and row["k9"] > row["d9"]:
+        score += 1
+
+    if row.get("osc") is not None and row["osc"] > 0:
+        score += 1
+
+    if row.get("volume_ratio") is not None and row["volume_ratio"] >= 1.2:
+        score += 1
+
+    if (
+        row.get("adx14") is not None
+        and row["adx14"] >= 20
+        and (row.get("plus_di") or 0) > (row.get("minus_di") or 0)
+    ):
+        score += 1
+
+    if row.get("relative_strength_pct") is not None and row["relative_strength_pct"] >= 0:
+        score += 1
+
+    if row.get("price_loc_bb") is not None:
+        if 0.2 <= row["price_loc_bb"] <= 0.9:
+            score += 1
+        elif row["price_loc_bb"] > 1:
+            score -= 1
+
+    if row.get("gap_pct") is not None and row["gap_pct"] > 5:
+        score -= 1
+
+    return score
+
+
+def calculate_entry_price(row, buy_signal):
+    if not buy_signal:
+        return None
+
+    close = row.get("close")
+    ma5 = row.get("ma5")
+    atr14 = row.get("atr14")
+
+    if close is None:
+        return None
+
+    if ma5 is None:
+        return close
+
+    if atr14 is not None and atr14 > 0:
+        entry_price = max(ma5, close - (atr14 * 0.35))
+    else:
+        entry_price = (close + ma5) / 2
+
+    return min(close, max(entry_price, close * 0.97))
+
+
+def add_ai_labels(rows):
+    if not rows:
+        return
+
+    interval_type = rows[0].get("interval_type")
+    bars_per_day = TIMEFRAME_METADATA.get(interval_type, {}).get("bars_per_day", 1)
+    horizon_1d = max(1, bars_per_day)
+    horizon_3d = horizon_1d * 3
+    horizon_5d = horizon_1d * 5
+
+    for i, row in enumerate(rows):
+        close = row.get("close")
+        future_1d_close = rows[i + horizon_1d].get("close") if i + horizon_1d < len(rows) else None
+        future_3d_close = rows[i + horizon_3d].get("close") if i + horizon_3d < len(rows) else None
+        future_window = rows[i + 1:i + horizon_5d + 1]
+        future_highs = [r.get("high") for r in future_window if r.get("high") is not None]
+        future_lows = [r.get("low") for r in future_window if r.get("low") is not None]
+
+        row["future_1d_return"] = pct_from_close(close, future_1d_close)
+        row["future_3d_return"] = pct_from_close(close, future_3d_close)
+        row["max_upside_5d"] = pct_from_close(close, max(future_highs) if future_highs else None)
+        row["drawdown_5d"] = pct_from_close(close, min(future_lows) if future_lows else None)
+
+        ai_signal_score = calculate_ai_signal_score(row)
+        buy_signal = 1 if close is not None and ai_signal_score >= 5 else 0
+
+        row["ai_signal_score"] = ai_signal_score
+        row["buy_signal"] = buy_signal
+        row["entry_price"] = calculate_entry_price(row, buy_signal)
+        row["label_ready"] = 1 if len(future_window) >= horizon_5d and close not in (None, 0) else 0
+        row["label_horizon_bars_1d"] = horizon_1d
+        row["label_horizon_bars_3d"] = horizon_3d
+        row["label_horizon_bars_5d"] = horizon_5d
 
 
 def calculate_indicators(rows, index_return_map=None, index_close_map=None):
@@ -829,6 +1212,8 @@ def calculate_indicators(rows, index_return_map=None, index_close_map=None):
         row["short_term_score"] = score
         add_indicator_aliases(row)
 
+    add_ai_labels(rows)
+
     return rows
 
 
@@ -956,11 +1341,176 @@ def indicator_db_value(row, column_name, timestamp):
     return row.get(source_map.get(column_name, column_name))
 
 
+def market_for_symbol(symbol):
+    if symbol.startswith("^"):
+        return "index"
+    if symbol.endswith(".TWO"):
+        return "TWO"
+    if symbol.endswith(".TW"):
+        return "TW"
+    return ""
+
+
+def save_quant_rows(cur, rows, timestamp):
+    ensure_quant_schema(cur)
+
+    cur.execute("""
+        DELETE FROM q_price_bars
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM k_bars kb
+            JOIN q_instruments qi ON qi.symbol = kb.symbol
+            JOIN q_timeframes qt ON qt.interval_type = kb.interval_type
+            WHERE qi.id = q_price_bars.instrument_id
+              AND qt.id = q_price_bars.timeframe_id
+              AND kb.bar_time = q_price_bars.bar_time
+        )
+    """)
+    cur.execute("""
+        DELETE FROM q_indicator_features
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM q_price_bars qb
+            WHERE qb.instrument_id = q_indicator_features.instrument_id
+              AND qb.timeframe_id = q_indicator_features.timeframe_id
+              AND qb.bar_time = q_indicator_features.bar_time
+        )
+    """)
+    cur.execute("""
+        DELETE FROM q_ai_labels
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM q_price_bars qb
+            WHERE qb.instrument_id = q_ai_labels.instrument_id
+              AND qb.timeframe_id = q_ai_labels.timeframe_id
+              AND qb.bar_time = q_ai_labels.bar_time
+        )
+    """)
+
+    if not rows:
+        return 0
+
+    for row in rows:
+        cur.execute("""
+            INSERT INTO q_instruments (symbol, base_code, name, item_type, market, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                base_code = excluded.base_code,
+                name = excluded.name,
+                item_type = excluded.item_type,
+                market = excluded.market,
+                updated_at = excluded.updated_at
+        """, (
+            row["symbol"],
+            row["base_code"],
+            row["name"],
+            row["item_type"],
+            market_for_symbol(row["symbol"]),
+            timestamp,
+        ))
+
+    instrument_ids = {
+        symbol: instrument_id
+        for symbol, instrument_id in cur.execute("SELECT symbol, id FROM q_instruments")
+    }
+    timeframe_ids = {
+        interval_type: timeframe_id
+        for interval_type, timeframe_id in cur.execute("SELECT interval_type, id FROM q_timeframes")
+    }
+
+    price_rows = []
+    feature_rows = []
+    label_rows = []
+    feature_columns = [name for name, _ in QUANT_FEATURE_COLUMNS]
+    label_columns = [name for name, _ in AI_LABEL_COLUMNS]
+
+    for row in rows:
+        instrument_id = instrument_ids[row["symbol"]]
+        timeframe_id = timeframe_ids[row["interval_type"]]
+
+        price_rows.append([
+            instrument_id,
+            timeframe_id,
+            row["bar_time"],
+            row.get("open"),
+            row.get("high"),
+            row.get("low"),
+            row.get("close"),
+            row.get("volume"),
+            row.get("scan_time"),
+        ])
+
+        feature_rows.append(
+            [instrument_id, timeframe_id, row["bar_time"]]
+            + [row.get(column_name) for column_name in feature_columns]
+            + [timestamp]
+        )
+
+        label_rows.append(
+            [instrument_id, timeframe_id, row["bar_time"]]
+            + [row.get(column_name) for column_name in label_columns]
+            + [timestamp, timestamp]
+        )
+
+    cur.executemany("""
+        INSERT INTO q_price_bars
+        (instrument_id, timeframe_id, bar_time, open_price, high_price, low_price,
+         close_price, volume, scan_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(instrument_id, timeframe_id, bar_time) DO UPDATE SET
+            open_price = excluded.open_price,
+            high_price = excluded.high_price,
+            low_price = excluded.low_price,
+            close_price = excluded.close_price,
+            volume = excluded.volume,
+            scan_time = excluded.scan_time
+    """, price_rows)
+
+    feature_placeholders = ", ".join(["?"] * (3 + len(feature_columns) + 1))
+    feature_column_sql = ", ".join(
+        ["instrument_id", "timeframe_id", "bar_time"] + feature_columns + ["updated_at"]
+    )
+    feature_update_sql = ", ".join(
+        f"{column_name} = excluded.{column_name}"
+        for column_name in feature_columns + ["updated_at"]
+    )
+    cur.executemany(
+        f"""
+        INSERT INTO q_indicator_features ({feature_column_sql})
+        VALUES ({feature_placeholders})
+        ON CONFLICT(instrument_id, timeframe_id, bar_time)
+        DO UPDATE SET {feature_update_sql}
+        """,
+        feature_rows,
+    )
+
+    label_placeholders = ", ".join(["?"] * (3 + len(label_columns) + 2))
+    label_column_sql = ", ".join(
+        ["instrument_id", "timeframe_id", "bar_time"] + label_columns + ["created_at", "updated_at"]
+    )
+    label_update_sql = ", ".join(
+        f"{column_name} = excluded.{column_name}"
+        for column_name in label_columns + ["updated_at"]
+    )
+    cur.executemany(
+        f"""
+        INSERT INTO q_ai_labels ({label_column_sql})
+        VALUES ({label_placeholders})
+        ON CONFLICT(instrument_id, timeframe_id, bar_time)
+        DO UPDATE SET {label_update_sql}
+        """,
+        label_rows,
+    )
+
+    return len(rows)
+
+
 def save_indicator_rows(rows):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
 
     ensure_indicator_table(cur)
+    ensure_quant_schema(cur)
 
     cur.execute("""
         DELETE FROM k_bar_indicators
@@ -996,6 +1546,8 @@ def save_indicator_rows(rows):
                 for row in rows
             ],
         )
+
+    save_quant_rows(cur, rows, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     conn.commit()
     conn.close()
@@ -1085,6 +1637,17 @@ def export_one_csv():
         "upper_tail_ratio",
         "lower_tail_ratio",
         "short_term_score",
+        "future_1d_return",
+        "future_3d_return",
+        "max_upside_5d",
+        "drawdown_5d",
+        "buy_signal",
+        "entry_price",
+        "ai_signal_score",
+        "label_ready",
+        "label_horizon_bars_1d",
+        "label_horizon_bars_3d",
+        "label_horizon_bars_5d",
         "note",
     ]
 
@@ -1171,6 +1734,17 @@ def export_one_csv():
                 round_value(row.get("upper_tail_ratio")),
                 round_value(row.get("lower_tail_ratio")),
                 round_value(row.get("short_term_score")),
+                round_value(row.get("future_1d_return")),
+                round_value(row.get("future_3d_return")),
+                round_value(row.get("max_upside_5d")),
+                round_value(row.get("drawdown_5d")),
+                round_value(row.get("buy_signal")),
+                round_value(row.get("entry_price")),
+                round_value(row.get("ai_signal_score")),
+                round_value(row.get("label_ready")),
+                round_value(row.get("label_horizon_bars_1d")),
+                round_value(row.get("label_horizon_bars_3d")),
+                round_value(row.get("label_horizon_bars_5d")),
                 "Network Ping Test 資料",
             ])
 
