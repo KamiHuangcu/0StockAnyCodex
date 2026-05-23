@@ -1,5 +1,4 @@
-import tkinter as tk
-from tkinter import messagebox
+import configparser
 import sqlite3
 import time
 import random
@@ -9,10 +8,12 @@ import math
 import os
 import ssl
 import sys
+import tkinter as tk
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
+from tkinter import messagebox
 
 
 def get_app_dir():
@@ -33,31 +34,139 @@ SNAPSHOT_AFTERMARKET_FILE = os.path.join(APP_DIR, "snapshot_aftermarket.csv")
 SNAPSHOT_INTRADAY_FILE = os.path.join(APP_DIR, "snapshot_intraday.csv")
 AI_TRAINING_FILE = os.path.join(APP_DIR, "ai_training.csv")
 CHIP_CACHE_DIR = os.path.join(APP_DIR, "chip_cache")
+SCANNER_CONFIG_FILE = os.path.join(APP_DIR, "scanner_config.ini")
+ENV_FILE = os.path.join(APP_DIR, ".env")
 
 REQUEST_TIMEOUT = 15
 MAX_RETRY = 3
 
-KEEP_DAYS = {
-    "1m": 5,
-    "5m": 20,
-    "30m": 60,
-    "1d": 1095,
-    "1wk": 1825,
+DEFAULT_SCANNER_CONFIG = {
+    "KEEP_DAYS": {
+        "1m": "5",
+        "5m": "20",
+        "30m": "60",
+        "1d": "730",
+        "1wk": "1095",
+    },
+    "YAHOO": {
+        "range_1m": "5d",
+        "range_5m": "60d",
+        "range_30m": "60d",
+        "range_1d": "2y",
+        "range_1wk": "3y",
+    },
+    "RECENT_FETCH_RANGE": {
+        "1m": "5d",
+        "5m": "7d",
+        "30m": "7d",
+        "1d": "7d",
+        "1wk": "21d",
+    },
+    "ADJUSTMENT_DETECT": {
+        "recent_bars": "10",
+        "threshold_pct": "0.02",
+    },
+    "FINMIND": {
+        "min_remaining": "80",
+        "sleep_seconds": "0.7",
+    },
 }
 
-YAHOO_CONFIG = {
-    "1m": {"range": "5d", "interval": "1m"},
-    "5m": {"range": "60d", "interval": "5m"},
-    "30m": {"range": "60d", "interval": "30m"},
-    "1d": {"range": "3y", "interval": "1d"},
-    "1wk": {"range": "5y", "interval": "1wk"},
-}
+
+def load_dotenv_file(path):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+def _config_int(cfg, section, option, fallback):
+    try:
+        return cfg.getint(section, option, fallback=fallback)
+    except ValueError:
+        return fallback
+
+
+def _config_float(cfg, section, option, fallback):
+    try:
+        return cfg.getfloat(section, option, fallback=fallback)
+    except ValueError:
+        return fallback
+
+
+def load_config(path=SCANNER_CONFIG_FILE):
+    cfg = configparser.ConfigParser()
+    cfg.read_dict(DEFAULT_SCANNER_CONFIG)
+    if os.path.exists(path):
+        cfg.read(path, encoding="utf-8")
+
+    keep_days = {
+        "1m": _config_int(cfg, "KEEP_DAYS", "1m", 5),
+        "5m": _config_int(cfg, "KEEP_DAYS", "5m", 20),
+        "30m": _config_int(cfg, "KEEP_DAYS", "30m", 60),
+        "1d": _config_int(cfg, "KEEP_DAYS", "1d", 730),
+        "1wk": _config_int(cfg, "KEEP_DAYS", "1wk", 1095),
+    }
+    yahoo_config = {
+        "1m": {"range": cfg.get("YAHOO", "range_1m", fallback="5d"), "interval": "1m"},
+        "5m": {"range": cfg.get("YAHOO", "range_5m", fallback="60d"), "interval": "5m"},
+        "30m": {"range": cfg.get("YAHOO", "range_30m", fallback="60d"), "interval": "30m"},
+        "1d": {"range": cfg.get("YAHOO", "range_1d", fallback="2y"), "interval": "1d"},
+        "1wk": {"range": cfg.get("YAHOO", "range_1wk", fallback="3y"), "interval": "1wk"},
+    }
+    recent_fetch_range = {
+        "1m": cfg.get("RECENT_FETCH_RANGE", "1m", fallback="5d"),
+        "5m": cfg.get("RECENT_FETCH_RANGE", "5m", fallback="7d"),
+        "30m": cfg.get("RECENT_FETCH_RANGE", "30m", fallback="7d"),
+        "1d": cfg.get("RECENT_FETCH_RANGE", "1d", fallback="7d"),
+        "1wk": cfg.get("RECENT_FETCH_RANGE", "1wk", fallback="21d"),
+    }
+    adjustment = {
+        "recent_bars": _config_int(cfg, "ADJUSTMENT_DETECT", "recent_bars", 10),
+        "threshold_pct": _config_float(cfg, "ADJUSTMENT_DETECT", "threshold_pct", 0.02),
+    }
+    finmind = {
+        "min_remaining": _config_int(cfg, "FINMIND", "min_remaining", 80),
+        "sleep_seconds": _config_float(cfg, "FINMIND", "sleep_seconds", 0.7),
+    }
+    return {
+        "keep_days": keep_days,
+        "yahoo_config": yahoo_config,
+        "recent_fetch_range": recent_fetch_range,
+        "adjustment": adjustment,
+        "finmind": finmind,
+    }
+
+
+load_dotenv_file(ENV_FILE)
+APP_CONFIG = load_config()
+
+KEEP_DAYS = APP_CONFIG["keep_days"]
+YAHOO_CONFIG = APP_CONFIG["yahoo_config"]
+RECENT_FETCH_RANGE = APP_CONFIG["recent_fetch_range"]
+ADJUSTMENT_CONFIG = APP_CONFIG["adjustment"]
+FINMIND_CONFIG = APP_CONFIG["finmind"]
+ADJ_DETECT_BARS = ADJUSTMENT_CONFIG["recent_bars"]
+ADJ_DETECT_THRESHOLD = ADJUSTMENT_CONFIG["threshold_pct"]
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWSE_INSTITUTIONAL_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
 TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 TPEX_INSTITUTIONAL_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 TPEX_MARGIN_URL = "https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php"
+MARKET_CONTEXT_SYMBOLS = {
+    "vix": "^VIX",
+    "spx": "^GSPC",
+    "ndx": "^IXIC",
+}
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StockScanner/2.0"
 SSL_CONTEXT = ssl._create_unverified_context()
@@ -137,6 +246,11 @@ AI_LABEL_COLUMNS = [
 ]
 
 stop_scan = False
+root = None
+result_text = None
+
+from finmind_client import FinMindClient, FinMindAbort
+from finmind_features import FinMindFeatureManager
 
 
 def ensure_columns(cur, table_name, columns):
@@ -322,6 +436,129 @@ def init_db(conn=None):
         ON ai_labels (buy_signal, interval_type, bar_time)
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS market_context (
+            trade_date TEXT PRIMARY KEY,
+            vix_close REAL,
+            vix_change_pct REAL,
+            vix_ma10 REAL,
+            spx_close REAL,
+            spx_1d_return REAL,
+            spx_5d_return REAL,
+            spx_above_ma20 INTEGER,
+            ndx_close REAL,
+            ndx_1d_return REAL,
+            ndx_5d_return REAL,
+            us_sentiment_label TEXT,
+            us_sentiment_score REAL,
+            updated_at TEXT
+        )
+    """)
+    ensure_columns(cur, "market_context", [
+        ("vix_close", "REAL"),
+        ("vix_change_pct", "REAL"),
+        ("vix_ma10", "REAL"),
+        ("spx_close", "REAL"),
+        ("spx_1d_return", "REAL"),
+        ("spx_5d_return", "REAL"),
+        ("spx_above_ma20", "INTEGER"),
+        ("ndx_close", "REAL"),
+        ("ndx_1d_return", "REAL"),
+        ("ndx_5d_return", "REAL"),
+        ("us_sentiment_label", "TEXT"),
+        ("us_sentiment_score", "REAL"),
+        ("updated_at", "TEXT"),
+    ])
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fetch_meta (
+            symbol TEXT NOT NULL,
+            interval_type TEXT NOT NULL,
+            first_seen_date TEXT,
+            last_full_fetch TEXT,
+            last_update TEXT,
+            bar_count INTEGER DEFAULT 0,
+            last_adj_check TEXT,
+            adj_detected_at TEXT,
+            adj_count INTEGER DEFAULT 0,
+            PRIMARY KEY (symbol, interval_type)
+        )
+    """)
+    ensure_columns(cur, "fetch_meta", [
+        ("first_seen_date", "TEXT"),
+        ("last_full_fetch", "TEXT"),
+        ("last_update", "TEXT"),
+        ("bar_count", "INTEGER DEFAULT 0"),
+        ("last_adj_check", "TEXT"),
+        ("adj_detected_at", "TEXT"),
+        ("adj_count", "INTEGER DEFAULT 0"),
+    ])
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_fundamentals (
+            trade_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            per REAL,
+            pbr REAL,
+            dividend_yield REAL,
+            foreign_holding_ratio REAL,
+            foreign_holding_change_5d REAL,
+            foreign_holding_change_20d REAL,
+            monthly_revenue REAL,
+            revenue_mom REAL,
+            revenue_yoy REAL,
+            securities_lending_volume REAL,
+            securities_lending_fee_rate REAL,
+            day_trading_volume REAL,
+            day_trading_ratio REAL,
+            source TEXT DEFAULT 'FinMind',
+            updated_at TEXT,
+            PRIMARY KEY (trade_date, symbol)
+        )
+    """)
+    ensure_columns(cur, "stock_fundamentals", [
+        ("per", "REAL"),
+        ("pbr", "REAL"),
+        ("dividend_yield", "REAL"),
+        ("foreign_holding_ratio", "REAL"),
+        ("foreign_holding_change_5d", "REAL"),
+        ("foreign_holding_change_20d", "REAL"),
+        ("monthly_revenue", "REAL"),
+        ("revenue_mom", "REAL"),
+        ("revenue_yoy", "REAL"),
+        ("securities_lending_volume", "REAL"),
+        ("securities_lending_fee_rate", "REAL"),
+        ("day_trading_volume", "REAL"),
+        ("day_trading_ratio", "REAL"),
+        ("source", "TEXT DEFAULT 'FinMind'"),
+        ("updated_at", "TEXT"),
+    ])
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_stock_fundamentals_symbol_date
+        ON stock_fundamentals (symbol, trade_date DESC)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS finmind_fetch_log (
+            dataset TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            data_id TEXT NOT NULL DEFAULT 'ALL',
+            status TEXT NOT NULL,
+            row_count INTEGER DEFAULT 0,
+            api_used INTEGER DEFAULT 0,
+            error_msg TEXT,
+            fetched_at TEXT,
+            PRIMARY KEY (dataset, trade_date, data_id)
+        )
+    """)
+    ensure_columns(cur, "finmind_fetch_log", [
+        ("status", "TEXT"),
+        ("row_count", "INTEGER DEFAULT 0"),
+        ("api_used", "INTEGER DEFAULT 0"),
+        ("error_msg", "TEXT"),
+        ("fetched_at", "TEXT"),
+    ])
+
     cur.execute("DROP VIEW IF EXISTS v_ai_features_intraday")
     cur.execute("DROP VIEW IF EXISTS v_ai_features_aftermarket")
     cur.execute("""
@@ -346,7 +583,16 @@ def init_db(conn=None):
             c.dealer_buy_sell_3d, c.institutional_total_buy_sell_3d,
             c.margin_change, c.short_change, c.margin_balance, c.short_balance,
             c.margin_short_ratio, c.bullish_chip_score, c.bearish_chip_score,
-            c.chip_data_status, c.chip_data_date,
+            c.chip_data_source, c.chip_data_status, c.chip_data_date,
+            fm.per, fm.pbr, fm.dividend_yield,
+            fm.foreign_holding_ratio, fm.foreign_holding_change_5d, fm.foreign_holding_change_20d,
+            fm.monthly_revenue, fm.revenue_mom, fm.revenue_yoy,
+            fm.securities_lending_volume, fm.securities_lending_fee_rate,
+            fm.day_trading_volume, fm.day_trading_ratio,
+            mc.vix_close, mc.vix_change_pct, mc.vix_ma10,
+            mc.spx_close, mc.spx_1d_return, mc.spx_5d_return, mc.spx_above_ma20,
+            mc.ndx_close, mc.ndx_1d_return, mc.ndx_5d_return,
+            mc.us_sentiment_label, mc.us_sentiment_score,
             l.future_1d_return, l.future_3d_return,
             l.max_upside_5d, l.drawdown_5d,
             l.buy_signal, l.entry_price, l.ai_signal_score, l.label_ready
@@ -362,6 +608,18 @@ def init_db(conn=None):
              SELECT MAX(trade_date) FROM chip_daily c2
              WHERE c2.symbol = f.symbol
                AND c2.trade_date < date(f.bar_time)
+         )
+        LEFT JOIN stock_fundamentals fm
+          ON fm.symbol = f.symbol
+         AND fm.trade_date = (
+             SELECT MAX(trade_date) FROM stock_fundamentals fm2
+             WHERE fm2.symbol = f.symbol
+               AND fm2.trade_date < date(f.bar_time)
+         )
+        LEFT JOIN market_context mc
+          ON mc.trade_date = (
+             SELECT MAX(trade_date) FROM market_context mc2
+             WHERE mc2.trade_date < date(f.bar_time)
          )
         LEFT JOIN ai_labels l
           ON l.symbol = f.symbol
@@ -390,7 +648,16 @@ def init_db(conn=None):
             c.dealer_buy_sell_3d, c.institutional_total_buy_sell_3d,
             c.margin_change, c.short_change, c.margin_balance, c.short_balance,
             c.margin_short_ratio, c.bullish_chip_score, c.bearish_chip_score,
-            c.chip_data_status, c.chip_data_date,
+            c.chip_data_source, c.chip_data_status, c.chip_data_date,
+            fm.per, fm.pbr, fm.dividend_yield,
+            fm.foreign_holding_ratio, fm.foreign_holding_change_5d, fm.foreign_holding_change_20d,
+            fm.monthly_revenue, fm.revenue_mom, fm.revenue_yoy,
+            fm.securities_lending_volume, fm.securities_lending_fee_rate,
+            fm.day_trading_volume, fm.day_trading_ratio,
+            mc.vix_close, mc.vix_change_pct, mc.vix_ma10,
+            mc.spx_close, mc.spx_1d_return, mc.spx_5d_return, mc.spx_above_ma20,
+            mc.ndx_close, mc.ndx_1d_return, mc.ndx_5d_return,
+            mc.us_sentiment_label, mc.us_sentiment_score,
             l.future_1d_return, l.future_3d_return,
             l.max_upside_5d, l.drawdown_5d,
             l.buy_signal, l.entry_price, l.ai_signal_score, l.label_ready
@@ -403,6 +670,14 @@ def init_db(conn=None):
         LEFT JOIN chip_daily c
           ON c.symbol = f.symbol
          AND c.trade_date = date(f.bar_time)
+        LEFT JOIN stock_fundamentals fm
+          ON fm.symbol = f.symbol
+         AND fm.trade_date = date(f.bar_time)
+        LEFT JOIN market_context mc
+          ON mc.trade_date = (
+             SELECT MAX(trade_date) FROM market_context mc2
+             WHERE mc2.trade_date <= date(f.bar_time)
+         )
         LEFT JOIN ai_labels l
           ON l.symbol = f.symbol
          AND l.interval_type = f.interval_type
@@ -417,9 +692,14 @@ def init_db(conn=None):
 
 
 def log(message):
-    result_text.insert(tk.END, message + "\n")
-    result_text.see(tk.END)
-    root.update()
+    text = str(message)
+    if result_text is not None:
+        result_text.insert(tk.END, text + "\n")
+        result_text.see(tk.END)
+        if root is not None:
+            root.update()
+        return
+    print(text, flush=True)
 
 
 def warn(message):
@@ -564,6 +844,145 @@ def fetch_yahoo_chart(symbol, range_value, interval):
     raise Exception(last_error)
 
 
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def find_series_index(series, trade_date):
+    for index in range(len(series) - 1, -1, -1):
+        if series[index]["trade_date"] <= trade_date:
+            return index
+    return None
+
+
+def daily_close_series(symbol, range_value="3mo"):
+    result = fetch_yahoo_chart(symbol, range_value, "1d")
+    rows = normalize_chart_bars(symbol, "1d", result)
+    return [
+        {
+            "trade_date": row["bar_time"][:10],
+            "close": row["close_price"],
+        }
+        for row in rows
+        if row.get("close_price") is not None
+    ]
+
+
+def pct_change_by_offset(series, index, offset):
+    target = index - offset
+    if target < 0:
+        return None
+    prev_close = series[target]["close"]
+    curr_close = series[index]["close"]
+    if prev_close in (None, 0) or curr_close is None:
+        return None
+    return (curr_close - prev_close) / prev_close * 100
+
+
+def mean_close(series, index, period):
+    if index + 1 < period:
+        return None
+    values = [item["close"] for item in series[index - period + 1:index + 1] if item.get("close") is not None]
+    if len(values) < period:
+        return None
+    return sum(values) / len(values)
+
+
+def sentiment_label_from_vix(vix_close):
+    if vix_close is None:
+        return ""
+    if vix_close >= 30:
+        return "fear"
+    if vix_close >= 20:
+        return "elevated"
+    if vix_close >= 15:
+        return "neutral"
+    return "greed"
+
+
+def fetch_market_context(conn):
+    try:
+        vix_series = daily_close_series(MARKET_CONTEXT_SYMBOLS["vix"])
+        spx_series = daily_close_series(MARKET_CONTEXT_SYMBOLS["spx"])
+        ndx_series = daily_close_series(MARKET_CONTEXT_SYMBOLS["ndx"])
+    except Exception as exc:
+        warn(f"美股市場情緒抓取失敗，略過本次更新: {exc}")
+        return None
+
+    if not vix_series or not spx_series or not ndx_series:
+        return None
+
+    common_dates = (
+        {row["trade_date"] for row in vix_series}
+        & {row["trade_date"] for row in spx_series}
+        & {row["trade_date"] for row in ndx_series}
+    )
+    if not common_dates:
+        return None
+
+    trade_date = max(common_dates)
+    vix_index = find_series_index(vix_series, trade_date)
+    spx_index = find_series_index(spx_series, trade_date)
+    ndx_index = find_series_index(ndx_series, trade_date)
+    if None in (vix_index, spx_index, ndx_index):
+        return None
+
+    vix_close = vix_series[vix_index]["close"]
+    spx_close = spx_series[spx_index]["close"]
+    ndx_close = ndx_series[ndx_index]["close"]
+    vix_change_pct = pct_change_by_offset(vix_series, vix_index, 1)
+    vix_ma10 = mean_close(vix_series, vix_index, 10)
+    spx_1d_return = pct_change_by_offset(spx_series, spx_index, 1)
+    spx_5d_return = pct_change_by_offset(spx_series, spx_index, 5)
+    spx_ma20 = mean_close(spx_series, spx_index, 20)
+    ndx_1d_return = pct_change_by_offset(ndx_series, ndx_index, 1)
+    ndx_5d_return = pct_change_by_offset(ndx_series, ndx_index, 5)
+    base_score = 100 - min((vix_close or 0) * 2, 100)
+    spx_bonus = (spx_5d_return or 0) * 2
+    sentiment_score = clamp(base_score + spx_bonus, 0, 100)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    conn.execute("""
+        INSERT INTO market_context (
+            trade_date, vix_close, vix_change_pct, vix_ma10, spx_close,
+            spx_1d_return, spx_5d_return, spx_above_ma20, ndx_close,
+            ndx_1d_return, ndx_5d_return, us_sentiment_label,
+            us_sentiment_score, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(trade_date) DO UPDATE SET
+            vix_close = excluded.vix_close,
+            vix_change_pct = excluded.vix_change_pct,
+            vix_ma10 = excluded.vix_ma10,
+            spx_close = excluded.spx_close,
+            spx_1d_return = excluded.spx_1d_return,
+            spx_5d_return = excluded.spx_5d_return,
+            spx_above_ma20 = excluded.spx_above_ma20,
+            ndx_close = excluded.ndx_close,
+            ndx_1d_return = excluded.ndx_1d_return,
+            ndx_5d_return = excluded.ndx_5d_return,
+            us_sentiment_label = excluded.us_sentiment_label,
+            us_sentiment_score = excluded.us_sentiment_score,
+            updated_at = excluded.updated_at
+    """, (
+        trade_date,
+        vix_close,
+        vix_change_pct,
+        vix_ma10,
+        spx_close,
+        spx_1d_return,
+        spx_5d_return,
+        1 if spx_ma20 is not None and spx_close is not None and spx_close >= spx_ma20 else 0,
+        ndx_close,
+        ndx_1d_return,
+        ndx_5d_return,
+        sentiment_label_from_vix(vix_close),
+        sentiment_score,
+        now,
+    ))
+    return trade_date
+
+
 def resolve_symbol(base_code):
     # 指數或已指定 Yahoo 完整代號，直接驗證
     if base_code.startswith("^") or base_code.endswith(".TW") or base_code.endswith(".TWO"):
@@ -635,12 +1054,13 @@ def upsert_symbol(cur, symbol, base_code, name, item_type):
     ))
 
 
-def save_bars(symbol, base_code, name, item_type, interval_type):
-    config = YAHOO_CONFIG[interval_type]
-    result = fetch_yahoo_chart(symbol, config["range"], config["interval"])
-
+def normalize_chart_bars(symbol, interval_type, result):
     timestamps = result.get("timestamp", [])
-    quote = result["indicators"]["quote"][0]
+    indicators = result.get("indicators", {})
+    quotes = indicators.get("quote", [])
+    if not quotes:
+        return []
+    quote = quotes[0]
 
     opens = quote.get("open", [])
     highs = quote.get("high", [])
@@ -648,64 +1068,260 @@ def save_bars(symbol, base_code, name, item_type, interval_type):
     closes = quote.get("close", [])
     volumes = quote.get("volume", [])
 
-    conn = connect_db()
-    cur = conn.cursor()
-    upsert_symbol(cur, symbol, base_code, name, item_type)
-
-    cutoff = (datetime.now() - timedelta(days=KEEP_DAYS[interval_type])).strftime("%Y-%m-%d %H:%M:%S")
-    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    saved_count = 0
     price_rows = []
-
     for i, ts in enumerate(timestamps):
         close_price = closes[i] if i < len(closes) else None
-
         if close_price is None:
             continue
 
         bar_dt = datetime.fromtimestamp(ts)
-        bar_time = bar_dt.strftime("%Y-%m-%d %H:%M:%S")
+        price_rows.append({
+            "symbol": symbol,
+            "interval_type": interval_type,
+            "bar_time": bar_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "open_price": opens[i] if i < len(opens) else None,
+            "high_price": highs[i] if i < len(highs) else None,
+            "low_price": lows[i] if i < len(lows) else None,
+            "close_price": close_price,
+            "volume": volumes[i] if i < len(volumes) else None,
+        })
+    return price_rows
 
-        if bar_time < cutoff:
+
+def get_fetch_meta(conn, symbol, interval_type):
+    row = conn.execute("""
+        SELECT first_seen_date, last_full_fetch, last_update, bar_count,
+               last_adj_check, adj_detected_at, adj_count
+        FROM fetch_meta
+        WHERE symbol = ? AND interval_type = ?
+    """, (symbol, interval_type)).fetchone()
+    if not row:
+        return None
+    return {
+        "first_seen_date": row[0],
+        "last_full_fetch": row[1],
+        "last_update": row[2],
+        "bar_count": row[3] or 0,
+        "last_adj_check": row[4],
+        "adj_detected_at": row[5],
+        "adj_count": row[6] or 0,
+    }
+
+
+def count_symbol_bars(conn, symbol, interval_type):
+    row = conn.execute("""
+        SELECT COUNT(*)
+        FROM k_bars
+        WHERE symbol = ? AND interval_type = ?
+    """, (symbol, interval_type)).fetchone()
+    return row[0] if row else 0
+
+
+def determine_fetch_mode(conn, symbol, interval_type):
+    meta = get_fetch_meta(conn, symbol, interval_type)
+    if not meta or not meta.get("last_full_fetch"):
+        return "full_backfill", YAHOO_CONFIG[interval_type]["range"], meta
+    return "incremental", RECENT_FETCH_RANGE[interval_type], meta
+
+
+def detect_price_adjustment(conn, symbol, interval_type, fetched_bars):
+    recent = fetched_bars[-ADJ_DETECT_BARS:]
+    for bar in recent:
+        row = conn.execute("""
+            SELECT close_price
+            FROM k_bars
+            WHERE symbol = ? AND interval_type = ? AND bar_time = ?
+        """, (symbol, interval_type, bar["bar_time"])).fetchone()
+        if not row or row[0] in (None, 0):
             continue
+        diff = abs((bar["close_price"] or 0) - row[0]) / abs(row[0])
+        if diff > ADJ_DETECT_THRESHOLD:
+            return True, bar["bar_time"]
+    return False, None
 
-        price_rows.append((
-            symbol,
-            interval_type,
-            bar_time,
-            opens[i] if i < len(opens) else None,
-            highs[i] if i < len(highs) else None,
-            lows[i] if i < len(lows) else None,
-            close_price,
-            volumes[i] if i < len(volumes) else None,
-            fetch_time,
-        ))
 
-    if price_rows:
-        cur.executemany("""
-            INSERT INTO k_bars
-            (symbol, interval_type, bar_time, open_price, high_price, low_price,
-             close_price, volume, fetch_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol, interval_type, bar_time) DO UPDATE SET
-                open_price = excluded.open_price,
-                high_price = excluded.high_price,
-                low_price = excluded.low_price,
-                close_price = excluded.close_price,
-                volume = excluded.volume,
-                fetch_time = excluded.fetch_time
-        """, price_rows)
-        saved_count = len(price_rows)
+def is_live_bar(interval_type, bar_time_text, now=None):
+    now = now or datetime.now()
+    bar_dt = datetime.fromisoformat(bar_time_text)
+    if interval_type in ("1m", "5m", "30m", "1d"):
+        return bar_dt.date() == now.date()
+    if interval_type == "1wk":
+        return bar_dt.isocalendar()[:2] == now.isocalendar()[:2]
+    return False
 
-    cur.execute(
-        "DELETE FROM k_bars WHERE interval_type = ? AND bar_time < ?",
-        (interval_type, cutoff),
+
+def delete_interval_rows(conn, symbol, interval_type):
+    conn.execute(
+        "DELETE FROM k_bars WHERE symbol = ? AND interval_type = ?",
+        (symbol, interval_type),
+    )
+    conn.execute(
+        "DELETE FROM k_bar_features WHERE symbol = ? AND interval_type = ?",
+        (symbol, interval_type),
+    )
+    conn.execute(
+        "DELETE FROM ai_labels WHERE symbol = ? AND interval_type = ?",
+        (symbol, interval_type),
     )
 
-    conn.commit()
-    conn.close()
 
-    return saved_count
+def cleanup_expired_rows(conn, symbol, interval_type, cutoff):
+    params = (symbol, interval_type, cutoff)
+    conn.execute(
+        "DELETE FROM k_bars WHERE symbol = ? AND interval_type = ? AND bar_time < ?",
+        params,
+    )
+    conn.execute(
+        "DELETE FROM k_bar_features WHERE symbol = ? AND interval_type = ? AND bar_time < ?",
+        params,
+    )
+    conn.execute(
+        "DELETE FROM ai_labels WHERE symbol = ? AND interval_type = ? AND bar_time < ?",
+        params,
+    )
+
+
+def upsert_fetch_meta(conn, symbol, interval_type, meta, fetch_mode, adj_bar_time=None):
+    today_text = datetime.now().strftime("%Y-%m-%d")
+    current = get_fetch_meta(conn, symbol, interval_type) or {}
+    first_seen = current.get("first_seen_date") or meta.get("first_seen_date") or today_text
+    last_full_fetch = current.get("last_full_fetch")
+    adj_detected_at = current.get("adj_detected_at")
+    adj_count = current.get("adj_count", 0)
+
+    if fetch_mode in ("full_backfill", "adj_refetch"):
+        last_full_fetch = today_text
+    if fetch_mode == "adj_refetch":
+        adj_detected_at = adj_bar_time or today_text
+        adj_count += 1
+
+    conn.execute("""
+        INSERT INTO fetch_meta (
+            symbol, interval_type, first_seen_date, last_full_fetch, last_update,
+            bar_count, last_adj_check, adj_detected_at, adj_count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol, interval_type) DO UPDATE SET
+            first_seen_date = excluded.first_seen_date,
+            last_full_fetch = excluded.last_full_fetch,
+            last_update = excluded.last_update,
+            bar_count = excluded.bar_count,
+            last_adj_check = excluded.last_adj_check,
+            adj_detected_at = excluded.adj_detected_at,
+            adj_count = excluded.adj_count
+    """, (
+        symbol,
+        interval_type,
+        first_seen,
+        last_full_fetch,
+        today_text,
+        count_symbol_bars(conn, symbol, interval_type),
+        today_text,
+        adj_detected_at,
+        adj_count,
+    ))
+
+
+def save_bars(symbol, base_code, name, item_type, interval_type, conn=None):
+    own_conn = conn is None
+    conn = conn or connect_db()
+    cur = conn.cursor()
+    upsert_symbol(cur, symbol, base_code, name, item_type)
+
+    fetch_mode, range_value, meta = determine_fetch_mode(conn, symbol, interval_type)
+    config = YAHOO_CONFIG[interval_type]
+    result = fetch_yahoo_chart(symbol, range_value, config["interval"])
+    price_rows = normalize_chart_bars(symbol, interval_type, result)
+
+    if fetch_mode == "incremental":
+        adjusted, adj_bar_time = detect_price_adjustment(conn, symbol, interval_type, price_rows)
+        if adjusted:
+            log(f"[ADJUST] {symbol} {interval_type}: 偵測到 Yahoo 歷史價格調整，改為全量重抓")
+            fetch_mode = "adj_refetch"
+            result = fetch_yahoo_chart(symbol, config["range"], config["interval"])
+            price_rows = normalize_chart_bars(symbol, interval_type, result)
+            delete_interval_rows(conn, symbol, interval_type)
+        else:
+            adj_bar_time = None
+    else:
+        adj_bar_time = None
+
+    cutoff = (datetime.now() - timedelta(days=KEEP_DAYS[interval_type])).strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    saved_count = 0
+
+    if price_rows:
+        write_rows = []
+        for row in price_rows:
+            if row["bar_time"] < cutoff:
+                continue
+            write_rows.append((
+                row["symbol"],
+                row["interval_type"],
+                row["bar_time"],
+                row["open_price"],
+                row["high_price"],
+                row["low_price"],
+                row["close_price"],
+                row["volume"],
+                fetch_time,
+            ))
+
+        if fetch_mode in ("full_backfill", "adj_refetch"):
+            conn.executemany("""
+                INSERT INTO k_bars
+                (symbol, interval_type, bar_time, open_price, high_price, low_price,
+                 close_price, volume, fetch_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, interval_type, bar_time) DO UPDATE SET
+                    open_price = excluded.open_price,
+                    high_price = excluded.high_price,
+                    low_price = excluded.low_price,
+                    close_price = excluded.close_price,
+                    volume = excluded.volume,
+                    fetch_time = excluded.fetch_time
+            """, write_rows)
+            saved_count = len(write_rows)
+        else:
+            historical_rows = []
+            live_rows = []
+            for values in write_rows:
+                if is_live_bar(interval_type, values[2]):
+                    live_rows.append(values)
+                else:
+                    historical_rows.append(values)
+
+            if historical_rows:
+                conn.executemany("""
+                    INSERT OR IGNORE INTO k_bars
+                    (symbol, interval_type, bar_time, open_price, high_price, low_price,
+                     close_price, volume, fetch_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, historical_rows)
+            if live_rows:
+                conn.executemany("""
+                    INSERT INTO k_bars
+                    (symbol, interval_type, bar_time, open_price, high_price, low_price,
+                     close_price, volume, fetch_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol, interval_type, bar_time) DO UPDATE SET
+                        open_price = excluded.open_price,
+                        high_price = excluded.high_price,
+                        low_price = excluded.low_price,
+                        close_price = excluded.close_price,
+                        volume = excluded.volume,
+                        fetch_time = excluded.fetch_time
+                """, live_rows)
+            saved_count = len(write_rows)
+
+    cleanup_expired_rows(conn, symbol, interval_type, cutoff)
+    upsert_fetch_meta(conn, symbol, interval_type, meta or {}, fetch_mode, adj_bar_time)
+
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+    return saved_count, fetch_mode
 
 
 def sma(values, period, index):
@@ -2205,7 +2821,7 @@ def save_chip_daily(conn, chip_result, latest_trade_date):
             status,
             chip_data_date,
             now,
-        ])
+        ]) 
 
     conn.executemany("""
         INSERT INTO chip_daily
@@ -2244,6 +2860,64 @@ def save_chip_daily(conn, chip_result, latest_trade_date):
             updated_at = excluded.updated_at
     """, output_rows)
     return len(output_rows)
+
+
+def refresh_chip_scores(conn, latest_trade_date):
+    if latest_trade_date is None:
+        return 0
+
+    trade_date = latest_trade_date.isoformat()
+    feature_rows = load_latest_daily_feature_rows(conn)
+    cur = conn.execute("""
+        SELECT symbol, foreign_buy_sell, investment_trust_buy_sell, dealer_buy_sell,
+               institutional_total_buy_sell, foreign_buy_sell_3d,
+               investment_trust_buy_sell_3d, dealer_buy_sell_3d,
+               institutional_total_buy_sell_3d, margin_change, short_change,
+               margin_balance, short_balance, margin_short_ratio
+        FROM chip_daily
+        WHERE trade_date = ?
+    """, (trade_date,))
+
+    updates = []
+    for row in cur.fetchall():
+        symbol = row[0]
+        merged = dict(feature_rows.get(symbol, {"symbol": symbol}))
+        merged.update({
+            "foreign_buy_sell": row[1],
+            "investment_trust_buy_sell": row[2],
+            "dealer_buy_sell": row[3],
+            "institutional_total_buy_sell": row[4],
+            "foreign_buy_sell_3d": row[5],
+            "investment_trust_buy_sell_3d": row[6],
+            "dealer_buy_sell_3d": row[7],
+            "institutional_total_buy_sell_3d": row[8],
+            "margin_change": row[9],
+            "short_change": row[10],
+            "margin_balance": row[11],
+            "short_balance": row[12],
+            "margin_short_ratio": row[13],
+        })
+        bullish_score, bullish_reason = score_bullish_chip(merged)
+        bearish_score, bearish_reason = score_bearish_chip(merged)
+        updates.append((
+            bullish_score,
+            bearish_score,
+            bullish_reason,
+            bearish_reason,
+            symbol,
+            trade_date,
+        ))
+
+    if updates:
+        conn.executemany("""
+            UPDATE chip_daily
+            SET bullish_chip_score = ?,
+                bearish_chip_score = ?,
+                bullish_chip_reason = ?,
+                bearish_chip_reason = ?
+            WHERE symbol = ? AND trade_date = ?
+        """, updates)
+    return len(updates)
 
 
 CSV_EXPORT_COLUMNS = [
@@ -2297,12 +2971,15 @@ CSV_EXPORT_COLUMNS = [
     "dist_low_52w_pct",
     "relative_strength_pct",
     "beta20",
+    "corr20",
+    "stock_index_ratio",
     "foreign_buy_sell",
     "investment_trust_buy_sell",
     "dealer_buy_sell",
     "institutional_total_buy_sell",
     "foreign_buy_sell_3d",
     "investment_trust_buy_sell_3d",
+    "dealer_buy_sell_3d",
     "institutional_total_buy_sell_3d",
     "margin_change",
     "short_change",
@@ -2311,8 +2988,34 @@ CSV_EXPORT_COLUMNS = [
     "margin_short_ratio",
     "bullish_chip_score",
     "bearish_chip_score",
+    "chip_data_source",
     "chip_data_status",
     "chip_data_date",
+    "per",
+    "pbr",
+    "dividend_yield",
+    "foreign_holding_ratio",
+    "foreign_holding_change_5d",
+    "foreign_holding_change_20d",
+    "monthly_revenue",
+    "revenue_mom",
+    "revenue_yoy",
+    "securities_lending_volume",
+    "securities_lending_fee_rate",
+    "day_trading_volume",
+    "day_trading_ratio",
+    "vix_close",
+    "vix_change_pct",
+    "vix_ma10",
+    "spx_close",
+    "spx_1d_return",
+    "spx_5d_return",
+    "spx_above_ma20",
+    "ndx_close",
+    "ndx_1d_return",
+    "ndx_5d_return",
+    "us_sentiment_label",
+    "us_sentiment_score",
     "daily_score",
     "short_term_score",
     "reason",
@@ -2571,6 +3274,143 @@ def update_all():
     for path, count in csv_counts.items():
         log(f"CSV 已輸出：{path}，共 {count} 筆資料")
     log(f"完成：成功 {success} 筆，失敗 {fail} 筆")
+
+
+def export_csv_button():
+    if result_text is not None:
+        result_text.delete("1.0", tk.END)
+    conn = connect_db()
+    init_db(conn)
+    try:
+        all_rows = get_all_rows_with_indicators()
+        feature_count = save_features(conn, all_rows)
+        label_count = save_ai_labels(conn, all_rows)
+        conn.commit()
+        csv_counts = export_csvs(conn)
+    finally:
+        conn.close()
+
+    log(f"SQLite k_bar_features updated: {feature_count} rows")
+    log(f"SQLite ai_labels updated: {label_count} rows")
+    for path, count in csv_counts.items():
+        log(f"CSV exported: {path} ({count} rows)")
+
+
+def update_all():
+    global stop_scan
+    stop_scan = False
+    if result_text is not None:
+        result_text.delete("1.0", tk.END)
+
+    try:
+        stocks = read_stock_list()
+    except FileNotFoundError:
+        messagebox.showerror("錯誤", f"找不到 {LIST_FILE}")
+        return
+
+    if not stocks:
+        messagebox.showwarning("提醒", "stock_list.txt 沒有可掃描的標的")
+        return
+
+    log(f"APP_DIR: {APP_DIR}")
+    log(f"Stock list: {LIST_FILE}")
+    log(f"Symbols to scan: {len(stocks)}")
+    log(f"Config file: {SCANNER_CONFIG_FILE}")
+    log("=" * 70)
+
+    success = 0
+    fail = 0
+    feature_count = 0
+    label_count = 0
+    chip_count = 0
+    csv_counts = {}
+    finmind_summary = {}
+
+    conn = connect_db()
+    init_db(conn)
+    try:
+        market_context_date = fetch_market_context(conn)
+        if market_context_date:
+            log(f"Market context updated: {market_context_date}")
+        conn.commit()
+
+        for index, (base_code, name, item_type) in enumerate(stocks, start=1):
+            if stop_scan:
+                log("掃描已停止")
+                break
+
+            log(f"[{index}/{len(stocks)}] {base_code} {name} ({display_item_type(item_type)})")
+
+            try:
+                symbol = resolve_symbol(base_code)
+                interval_counts = []
+                for interval_type in INTERVALS:
+                    count, fetch_mode = save_bars(
+                        symbol,
+                        base_code,
+                        name,
+                        item_type,
+                        interval_type,
+                        conn=conn,
+                    )
+                    interval_counts.append(f"{interval_type}:{count}({fetch_mode})")
+                conn.commit()
+                log(f"  {symbol} | " + " | ".join(interval_counts))
+                success += 1
+            except Exception as exc:
+                log(f"  Failed: {exc}")
+                fail += 1
+
+            if index < len(stocks) and not stop_scan:
+                random_sleep()
+
+        log("")
+        log("=" * 70)
+        log("Latest summary")
+        for row in latest_summary():
+            symbol, name, interval_type, bar_time, close_price, scan_time = row
+            log(f"{symbol} {name} | {interval_type} | {bar_time} | close {round_value(close_price)}")
+
+        all_rows = get_all_rows_with_indicators()
+        feature_count = save_features(conn, all_rows)
+        label_count = save_ai_labels(conn, all_rows)
+        latest_trade_date = get_latest_trade_date(conn)
+
+        log("")
+        log("Fetching official TWSE/TPEX chip data...")
+        chip_result = fetch_official_chip_data(latest_trade_date)
+        chip_count = save_chip_daily(conn, chip_result, latest_trade_date)
+        refresh_chip_scores(conn, latest_trade_date)
+
+        if latest_trade_date is not None:
+            fm_client = FinMindClient(
+                app_dir=APP_DIR,
+                logger=log,
+                defaults=FINMIND_CONFIG,
+            )
+            fm_manager = FinMindFeatureManager(fm_client, conn, logger=log)
+            finmind_summary = fm_manager.update_pipeline(latest_trade_date.isoformat()) or {}
+            refresh_chip_scores(conn, latest_trade_date)
+
+        cutoff = (datetime.now() - timedelta(days=1095)).date().isoformat()
+        conn.execute("DELETE FROM stock_fundamentals WHERE trade_date < ?", (cutoff,))
+        conn.execute("DELETE FROM market_context WHERE trade_date < ?", (cutoff,))
+        conn.commit()
+
+        csv_counts = export_csvs(conn)
+    finally:
+        conn.close()
+
+    log("")
+    log(f"SQLite k_bar_features updated: {feature_count} rows")
+    log(f"SQLite ai_labels updated: {label_count} rows")
+    log(f"SQLite chip_daily updated: {chip_count} rows")
+    if finmind_summary:
+        summary_text = ", ".join(f"{key}={value}" for key, value in sorted(finmind_summary.items()))
+        log(f"FinMind summary: {summary_text}")
+    for path, count in csv_counts.items():
+        log(f"CSV exported: {path} ({count} rows)")
+    log(f"Completed: success={success}, failed={fail}")
 
 
 init_db()
