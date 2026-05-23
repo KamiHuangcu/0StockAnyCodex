@@ -7,6 +7,7 @@ $WindowsVenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $MsysVenvPython = Join-Path $VenvDir "bin\python.exe"
 $DistDir = Join-Path $ProjectDir "dist"
 $ExePath = Join-Path $DistDir "NetworkPingTest.exe"
+$RootExePath = Join-Path $ProjectDir "NetworkPingTest.exe"
 
 Write-Host "Project: $ProjectDir"
 
@@ -26,6 +27,14 @@ if (-not (Test-Path $PythonExe)) {
 if (-not (Test-Path $PythonExe)) {
     throw "Virtual environment was created, but python.exe was not found under Scripts or bin."
 }
+
+$RuntimeArtifacts = @(
+    "stock_scanner.db",
+    "stock_data.db",
+    "snapshot_aftermarket.csv",
+    "snapshot_intraday.csv",
+    "ai_training.csv"
+)
 
 Push-Location $ProjectDir
 try {
@@ -51,23 +60,53 @@ Write-Host "Building NetworkPingTest.exe..."
     Pop-Location
 }
 
+foreach ($artifact in $RuntimeArtifacts) {
+    $artifactPath = Join-Path $DistDir $artifact
+    if (Test-Path $artifactPath) {
+        Remove-Item -Force $artifactPath
+        Write-Host "Removed stale dist artifact: $artifact"
+    }
+}
+
+function Copy-BuildAsset {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationDir,
+        [string]$Label
+    )
+
+    if (Test-Path $SourcePath) {
+        Copy-Item -Force $SourcePath $DestinationDir
+        Write-Host "Copied $Label to dist."
+        return $true
+    }
+
+    Write-Host "Missing ${Label}: $SourcePath"
+    return $false
+}
+
 $LocalStockList = Join-Path $ProjectDir "stock_list.txt"
 $ParentStockList = Join-Path (Split-Path -Parent $ProjectDir) "stock_list.txt"
+$ScannerConfig = Join-Path $ProjectDir "scanner_config.ini"
+$DotEnv = Join-Path $ProjectDir ".env"
 
-if (Test-Path $LocalStockList) {
-    Copy-Item -Force $LocalStockList $DistDir
-    Write-Host "Copied stock_list.txt from project folder."
-} elseif (Test-Path $ParentStockList) {
-    Copy-Item -Force $ParentStockList $DistDir
-    Write-Host "Copied stock_list.txt from parent folder."
-} else {
-    Write-Host "No stock_list.txt found. Put stock_list.txt next to the exe before scanning."
+if (-not (Copy-BuildAsset -SourcePath $LocalStockList -DestinationDir $DistDir -Label "stock_list.txt")) {
+    if (-not (Copy-BuildAsset -SourcePath $ParentStockList -DestinationDir $DistDir -Label "stock_list.txt (parent copy)")) {
+        Write-Host "No stock_list.txt found. Put stock_list.txt next to the exe before scanning."
+    }
 }
+
+Copy-BuildAsset -SourcePath $ScannerConfig -DestinationDir $DistDir -Label "scanner_config.ini" | Out-Null
+Copy-BuildAsset -SourcePath $DotEnv -DestinationDir $DistDir -Label ".env" | Out-Null
 
 if (-not (Test-Path $ExePath)) {
     throw "Build finished but exe was not found: $ExePath"
 }
 
+Copy-Item -Force $ExePath $RootExePath
+Write-Host "Copied NetworkPingTest.exe to project root."
+
 Write-Host ""
 Write-Host "Build complete:"
 Write-Host $ExePath
+Write-Host $RootExePath

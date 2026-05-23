@@ -27,6 +27,8 @@ def get_app_dir():
 
 
 APP_DIR = get_app_dir()
+APP_NAME = "NetworkPingTest"
+APP_VERSION = "v2026.05.23-arch2"
 
 DB_NAME = os.path.join(APP_DIR, "stock_scanner.db")
 LIST_FILE = os.path.join(APP_DIR, "stock_list.txt")
@@ -3204,6 +3206,7 @@ def update_all():
         return
 
     log(f"APP_DIR: {APP_DIR}")
+    log(f"Version: {APP_VERSION}")
     log(f"Stock list: {LIST_FILE}")
     log(f"Symbols to scan: {len(stocks)}")
     log(f"Config file: {SCANNER_CONFIG_FILE}")
@@ -3307,12 +3310,12 @@ def update_all():
 init_db()
 
 root = tk.Tk()
-root.title("Network Ping Test 工程測試工具 Pro")
+root.title(f"{APP_NAME} {APP_VERSION}")
 root.geometry("1180x760")
 
 title_label = tk.Label(
     root,
-    text="Network Ping Test 工程測試工具 Pro：多週期資料測試 + 設定清單控制"
+    text=f"{APP_NAME} {APP_VERSION}"
 )
 title_label.pack(pady=10)
 
@@ -3321,7 +3324,7 @@ button_frame.pack(pady=5)
 
 update_button = tk.Button(
     button_frame,
-    text="開始全部測試",
+    text="開始掃描",
     command=update_all,
     width=20,
     height=2,
@@ -3330,7 +3333,7 @@ update_button.pack(side=tk.LEFT, padx=8)
 
 stop_button = tk.Button(
     button_frame,
-    text="停止測試",
+    text="停止掃描",
     command=stop_update,
     width=20,
     height=2,
