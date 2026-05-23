@@ -48,3 +48,4 @@ file.list
 .DS_Store
 Thumbs.db
 scan_all_1d.py
+.env
