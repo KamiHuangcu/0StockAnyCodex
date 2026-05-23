@@ -29,6 +29,11 @@ xref-*.html
 # Runtime/generated data
 stock_data.db
 stock_export.csv
+stock_scanner.db
+snapshot_aftermarket.csv
+snapshot_intraday.csv
+ai_training.csv
+chip_cache/
 *.db-journal
 *.sqlite
 *.sqlite3
@@ -42,3 +47,4 @@ file.list
 .idea/
 .DS_Store
 Thumbs.db
+scan_all_1d.py

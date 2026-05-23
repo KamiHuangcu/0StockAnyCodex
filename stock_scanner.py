@@ -1,13 +1,17 @@
 import tkinter as tk
 from tkinter import messagebox
-import requests
 import sqlite3
 import time
 import random
 import csv
+import json
 import math
 import os
+import ssl
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 
 
@@ -23,41 +27,40 @@ def get_app_dir():
 
 APP_DIR = get_app_dir()
 
-DB_NAME = os.path.join(APP_DIR, "stock_data.db")
+DB_NAME = os.path.join(APP_DIR, "stock_scanner.db")
 LIST_FILE = os.path.join(APP_DIR, "stock_list.txt")
-EXPORT_FILE = os.path.join(APP_DIR, "stock_export.csv")
+SNAPSHOT_AFTERMARKET_FILE = os.path.join(APP_DIR, "snapshot_aftermarket.csv")
+SNAPSHOT_INTRADAY_FILE = os.path.join(APP_DIR, "snapshot_intraday.csv")
+AI_TRAINING_FILE = os.path.join(APP_DIR, "ai_training.csv")
+CHIP_CACHE_DIR = os.path.join(APP_DIR, "chip_cache")
 
 REQUEST_TIMEOUT = 15
 MAX_RETRY = 3
 
 KEEP_DAYS = {
-    "1m": 14,
-    "5m": 30,
+    "1m": 5,
+    "5m": 20,
     "30m": 60,
-    "1d": 180,
-    "1wk": 365 * 3,
-}
-
-EXPORT_DAYS = {
-    "1m": 14,
-    "5m": 30,
-    "30m": 60,
-    "1d": 180,
-    "1wk": 365 * 3,
+    "1d": 1095,
+    "1wk": 1825,
 }
 
 YAHOO_CONFIG = {
-    # Yahoo usually limits 1m data range. 7d is safer than trying 14d.
-    "1m": {"range": "7d", "interval": "1m"},
+    "1m": {"range": "5d", "interval": "1m"},
     "5m": {"range": "60d", "interval": "5m"},
     "30m": {"range": "60d", "interval": "30m"},
-    "1d": {"range": "1y", "interval": "1d"},
+    "1d": {"range": "3y", "interval": "1d"},
     "1wk": {"range": "5y", "interval": "1wk"},
 }
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+TWSE_INSTITUTIONAL_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
+TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+TPEX_INSTITUTIONAL_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+TPEX_MARGIN_URL = "https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php"
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StockScanner/2.0"
+SSL_CONTEXT = ssl._create_unverified_context()
 
 # 不再寫死自動加入，全部交給 stock_list.txt 控制。
 MARKET_INDEXES = []
@@ -72,71 +75,43 @@ TIMEFRAME_METADATA = {
     "1wk": {"interval_minutes": 10080, "bars_per_day": 1, "sort_order": 5},
 }
 
-INDICATOR_DB_COLUMNS = [
-    ("record_type", "TEXT"),
-    ("symbol", "TEXT"),
-    ("base_code", "TEXT"),
-    ("name", "TEXT"),
-    ("item_type", "TEXT"),
-    ("interval_type", "TEXT"),
-    ("bar_time", "TEXT"),
-    ("open_price", "REAL"),
-    ("high_price", "REAL"),
-    ("low_price", "REAL"),
-    ("close_price", "REAL"),
-    ("volume", "REAL"),
-    ("scan_time", "TEXT"),
+FEATURE_COLUMNS = [
     ("change_pct", "REAL"),
+    ("gap_pct", "REAL"),
+    ("upper_tail_ratio", "REAL"),
+    ("lower_tail_ratio", "REAL"),
+    ("tail_ratio", "REAL"),
+    ("day_range_pos", "REAL"),
     ("ma5", "REAL"),
     ("ma10", "REAL"),
     ("ma20", "REAL"),
     ("ma60", "REAL"),
     ("ma120", "REAL"),
     ("ma_slope_20", "REAL"),
-    ("bias5", "REAL"),
-    ("bias10", "REAL"),
     ("bias20", "REAL"),
-    ("bias60", "REAL"),
-    ("bias120", "REAL"),
-    ("bias5_chg", "REAL"),
-    ("bias10_chg", "REAL"),
-    ("bias20_chg", "REAL"),
-    ("bias60_chg", "REAL"),
-    ("bias120_chg", "REAL"),
     ("rsi14", "REAL"),
     ("k9", "REAL"),
     ("d9", "REAL"),
     ("j9", "REAL"),
-    ("williams_r14", "REAL"),
     ("dif", "REAL"),
     ("macd", "REAL"),
     ("osc", "REAL"),
-    ("bb_upper", "REAL"),
-    ("bb_middle", "REAL"),
-    ("bb_lower", "REAL"),
-    ("bb_mid20", "REAL"),
-    ("bb_upper20", "REAL"),
-    ("bb_lower20", "REAL"),
-    ("bb_width", "REAL"),
-    ("price_loc_bb", "REAL"),
-    ("atr14", "REAL"),
+    ("williams_r14", "REAL"),
+    ("volume_ma5", "REAL"),
+    ("volume_ratio", "REAL"),
     ("vol_std_score", "REAL"),
+    ("vwap", "REAL"),
+    ("obv", "REAL"),
+    ("mfi14", "REAL"),
+    ("atr14", "REAL"),
     ("adx14", "REAL"),
     ("plus_di", "REAL"),
     ("minus_di", "REAL"),
-    ("plus_di14", "REAL"),
-    ("minus_di14", "REAL"),
-    ("volume_ma5", "REAL"),
-    ("volume_ratio", "REAL"),
-    ("vwap", "REAL"),
-    ("obv", "REAL"),
-    ("vzo", "REAL"),
-    ("vzo14", "REAL"),
-    ("mfi14", "REAL"),
-    ("money_flow_index", "REAL"),
-    ("vpt", "REAL"),
-    ("volume_price_trend", "REAL"),
-    ("day_range_pos", "REAL"),
+    ("bb_upper", "REAL"),
+    ("bb_middle", "REAL"),
+    ("bb_lower", "REAL"),
+    ("bb_width", "REAL"),
+    ("price_loc_bb", "REAL"),
     ("high_52w", "REAL"),
     ("low_52w", "REAL"),
     ("dist_high_52w_pct", "REAL"),
@@ -145,25 +120,9 @@ INDICATOR_DB_COLUMNS = [
     ("corr20", "REAL"),
     ("relative_strength_pct", "REAL"),
     ("stock_index_ratio", "REAL"),
-    ("gap_pct", "REAL"),
-    ("tail_ratio", "REAL"),
-    ("upper_tail_ratio", "REAL"),
-    ("lower_tail_ratio", "REAL"),
+    ("daily_score", "REAL"),
     ("short_term_score", "REAL"),
-    ("future_1d_return", "REAL"),
-    ("future_3d_return", "REAL"),
-    ("max_upside_5d", "REAL"),
-    ("drawdown_5d", "REAL"),
-    ("buy_signal", "INTEGER"),
-    ("entry_price", "REAL"),
-    ("ai_signal_score", "REAL"),
-    ("label_ready", "INTEGER"),
-    ("label_horizon_bars_1d", "INTEGER"),
-    ("label_horizon_bars_3d", "INTEGER"),
-    ("label_horizon_bars_5d", "INTEGER"),
-    ("note", "TEXT"),
-    ("created_at", "TEXT"),
-    ("updated_at", "TEXT"),
+    ("reason", "TEXT"),
 ]
 
 AI_LABEL_COLUMNS = [
@@ -175,36 +134,6 @@ AI_LABEL_COLUMNS = [
     ("entry_price", "REAL"),
     ("ai_signal_score", "REAL"),
     ("label_ready", "INTEGER"),
-    ("label_horizon_bars_1d", "INTEGER"),
-    ("label_horizon_bars_3d", "INTEGER"),
-    ("label_horizon_bars_5d", "INTEGER"),
-]
-
-META_COLUMN_NAMES = {
-    "record_type",
-    "symbol",
-    "base_code",
-    "name",
-    "item_type",
-    "interval_type",
-    "bar_time",
-    "open_price",
-    "high_price",
-    "low_price",
-    "close_price",
-    "volume",
-    "scan_time",
-    "note",
-    "created_at",
-    "updated_at",
-}
-
-AI_LABEL_COLUMN_NAMES = {name for name, _ in AI_LABEL_COLUMNS}
-
-QUANT_FEATURE_COLUMNS = [
-    (name, column_type)
-    for name, column_type in INDICATOR_DB_COLUMNS
-    if name not in META_COLUMN_NAMES and name not in AI_LABEL_COLUMN_NAMES
 ]
 
 stop_scan = False
@@ -219,265 +148,340 @@ def ensure_columns(cur, table_name, columns):
             cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}")
 
 
-def ensure_indicator_table(cur):
-    column_defs = ",\n            ".join(
-        f"{name} {column_type}" for name, column_type in INDICATOR_DB_COLUMNS
-    )
-
-    cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS k_bar_indicators (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            {column_defs},
-            UNIQUE(symbol, interval_type, bar_time)
-        )
-    """)
-
-    cur.execute("PRAGMA table_info(k_bar_indicators)")
-    existing_columns = {row[1] for row in cur.fetchall()}
-
-    ensure_columns(cur, "k_bar_indicators", INDICATOR_DB_COLUMNS)
-
-    cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_k_bar_indicators_unique
-        ON k_bar_indicators (symbol, interval_type, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_interval_time
-        ON k_bar_indicators (interval_type, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_buy_signal
-        ON k_bar_indicators (buy_signal, interval_type, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bar_indicators_future_1d
-        ON k_bar_indicators (future_1d_return)
-    """)
+def connect_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-32000")
+    return conn
 
 
-def ensure_quant_schema(cur):
+def init_db(conn=None):
+    own_conn = conn is None
+    conn = conn or connect_db()
+    cur = conn.cursor()
+
     feature_defs = ",\n            ".join(
-        f"{name} {column_type}" for name, column_type in QUANT_FEATURE_COLUMNS
+        f"{name} {column_type}" for name, column_type in FEATURE_COLUMNS
     )
     label_defs = ",\n            ".join(
         f"{name} {column_type}" for name, column_type in AI_LABEL_COLUMNS
     )
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS q_instruments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL UNIQUE,
-            base_code TEXT,
+        CREATE TABLE IF NOT EXISTS symbols (
+            symbol TEXT PRIMARY KEY,
+            base_code TEXT NOT NULL,
             name TEXT,
             item_type TEXT,
             market TEXT,
+            first_seen TEXT,
             updated_at TEXT
         )
     """)
-    ensure_columns(cur, "q_instruments", [
+    ensure_columns(cur, "symbols", [
         ("base_code", "TEXT"),
         ("name", "TEXT"),
         ("item_type", "TEXT"),
         ("market", "TEXT"),
+        ("first_seen", "TEXT"),
         ("updated_at", "TEXT"),
     ])
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS q_timeframes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            interval_type TEXT NOT NULL UNIQUE,
-            interval_minutes INTEGER,
-            bars_per_day INTEGER,
-            keep_days INTEGER,
-            export_days INTEGER,
-            sort_order INTEGER
-        )
-    """)
-    ensure_columns(cur, "q_timeframes", [
-        ("interval_minutes", "INTEGER"),
-        ("bars_per_day", "INTEGER"),
-        ("keep_days", "INTEGER"),
-        ("export_days", "INTEGER"),
-        ("sort_order", "INTEGER"),
-    ])
-
-    for interval_type in INTERVALS:
-        meta = TIMEFRAME_METADATA[interval_type]
-        cur.execute("""
-            INSERT INTO q_timeframes
-            (interval_type, interval_minutes, bars_per_day, keep_days, export_days, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(interval_type) DO UPDATE SET
-                interval_minutes = excluded.interval_minutes,
-                bars_per_day = excluded.bars_per_day,
-                keep_days = excluded.keep_days,
-                export_days = excluded.export_days,
-                sort_order = excluded.sort_order
-        """, (
-            interval_type,
-            meta["interval_minutes"],
-            meta["bars_per_day"],
-            KEEP_DAYS[interval_type],
-            EXPORT_DAYS[interval_type],
-            meta["sort_order"],
-        ))
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS q_price_bars (
-            instrument_id INTEGER NOT NULL,
-            timeframe_id INTEGER NOT NULL,
+        CREATE TABLE IF NOT EXISTS k_bars (
+            symbol TEXT NOT NULL,
+            interval_type TEXT NOT NULL,
             bar_time TEXT NOT NULL,
             open_price REAL,
             high_price REAL,
             low_price REAL,
             close_price REAL,
             volume REAL,
-            scan_time TEXT,
-            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+            fetch_time TEXT,
+            PRIMARY KEY (symbol, interval_type, bar_time)
         )
     """)
-    ensure_columns(cur, "q_price_bars", [
+    ensure_columns(cur, "k_bars", [
         ("open_price", "REAL"),
         ("high_price", "REAL"),
         ("low_price", "REAL"),
         ("close_price", "REAL"),
         ("volume", "REAL"),
-        ("scan_time", "TEXT"),
+        ("fetch_time", "TEXT"),
     ])
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bars_symbol_interval_time
+        ON k_bars (symbol, interval_type, bar_time DESC)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bars_interval_time
+        ON k_bars (interval_type, bar_time DESC)
+    """)
 
     cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS q_indicator_features (
-            instrument_id INTEGER NOT NULL,
-            timeframe_id INTEGER NOT NULL,
+        CREATE TABLE IF NOT EXISTS k_bar_features (
+            symbol TEXT NOT NULL,
+            interval_type TEXT NOT NULL,
             bar_time TEXT NOT NULL,
             {feature_defs},
             updated_at TEXT,
-            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+            PRIMARY KEY (symbol, interval_type, bar_time)
         )
     """)
-    ensure_columns(cur, "q_indicator_features", QUANT_FEATURE_COLUMNS + [("updated_at", "TEXT")])
+    ensure_columns(cur, "k_bar_features", FEATURE_COLUMNS + [("updated_at", "TEXT")])
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bar_features_interval_time
+        ON k_bar_features (interval_type, bar_time DESC)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_k_bar_features_score
+        ON k_bar_features (interval_type, daily_score DESC)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chip_daily (
+            symbol TEXT NOT NULL,
+            base_code TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            foreign_buy_sell REAL DEFAULT 0,
+            investment_trust_buy_sell REAL DEFAULT 0,
+            dealer_buy_sell REAL DEFAULT 0,
+            institutional_total_buy_sell REAL DEFAULT 0,
+            foreign_buy_sell_3d REAL DEFAULT 0,
+            investment_trust_buy_sell_3d REAL DEFAULT 0,
+            dealer_buy_sell_3d REAL DEFAULT 0,
+            institutional_total_buy_sell_3d REAL DEFAULT 0,
+            margin_change REAL DEFAULT 0,
+            short_change REAL DEFAULT 0,
+            margin_balance REAL DEFAULT 0,
+            short_balance REAL DEFAULT 0,
+            margin_short_ratio REAL DEFAULT 0,
+            bullish_chip_score REAL DEFAULT 0,
+            bearish_chip_score REAL DEFAULT 0,
+            bullish_chip_reason TEXT,
+            bearish_chip_reason TEXT,
+            chip_data_source TEXT,
+            chip_data_status TEXT,
+            chip_data_date TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (symbol, trade_date)
+        )
+    """)
+    ensure_columns(cur, "chip_daily", [
+        ("base_code", "TEXT"),
+        ("foreign_buy_sell", "REAL DEFAULT 0"),
+        ("investment_trust_buy_sell", "REAL DEFAULT 0"),
+        ("dealer_buy_sell", "REAL DEFAULT 0"),
+        ("institutional_total_buy_sell", "REAL DEFAULT 0"),
+        ("foreign_buy_sell_3d", "REAL DEFAULT 0"),
+        ("investment_trust_buy_sell_3d", "REAL DEFAULT 0"),
+        ("dealer_buy_sell_3d", "REAL DEFAULT 0"),
+        ("institutional_total_buy_sell_3d", "REAL DEFAULT 0"),
+        ("margin_change", "REAL DEFAULT 0"),
+        ("short_change", "REAL DEFAULT 0"),
+        ("margin_balance", "REAL DEFAULT 0"),
+        ("short_balance", "REAL DEFAULT 0"),
+        ("margin_short_ratio", "REAL DEFAULT 0"),
+        ("bullish_chip_score", "REAL DEFAULT 0"),
+        ("bearish_chip_score", "REAL DEFAULT 0"),
+        ("bullish_chip_reason", "TEXT"),
+        ("bearish_chip_reason", "TEXT"),
+        ("chip_data_source", "TEXT"),
+        ("chip_data_status", "TEXT"),
+        ("chip_data_date", "TEXT"),
+        ("updated_at", "TEXT"),
+    ])
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chip_daily_date
+        ON chip_daily (trade_date DESC)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chip_daily_symbol_date
+        ON chip_daily (symbol, trade_date DESC)
+    """)
 
     cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS q_ai_labels (
-            instrument_id INTEGER NOT NULL,
-            timeframe_id INTEGER NOT NULL,
+        CREATE TABLE IF NOT EXISTS ai_labels (
+            symbol TEXT NOT NULL,
+            interval_type TEXT NOT NULL,
             bar_time TEXT NOT NULL,
             {label_defs},
             created_at TEXT,
             updated_at TEXT,
-            PRIMARY KEY (instrument_id, timeframe_id, bar_time)
+            PRIMARY KEY (symbol, interval_type, bar_time)
         )
     """)
-    ensure_columns(cur, "q_ai_labels", AI_LABEL_COLUMNS + [
+    ensure_columns(cur, "ai_labels", AI_LABEL_COLUMNS + [
         ("created_at", "TEXT"),
         ("updated_at", "TEXT"),
     ])
-
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_q_price_bars_timeframe_time
-        ON q_price_bars (timeframe_id, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_q_price_bars_instrument_time
-        ON q_price_bars (instrument_id, timeframe_id, bar_time DESC)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_q_features_timeframe_time
-        ON q_indicator_features (timeframe_id, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_q_labels_buy_signal
-        ON q_ai_labels (buy_signal, timeframe_id, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_q_labels_future_1d
-        ON q_ai_labels (future_1d_return)
+        CREATE INDEX IF NOT EXISTS idx_ai_labels_buy_signal
+        ON ai_labels (buy_signal, interval_type, bar_time)
     """)
 
-    feature_select = ",\n            ".join(f"f.{name}" for name, _ in QUANT_FEATURE_COLUMNS)
-    label_select = ",\n            ".join(f"l.{name}" for name, _ in AI_LABEL_COLUMNS)
-
-    cur.execute("DROP VIEW IF EXISTS v_quant_ai_dataset")
-    cur.execute(f"""
-        CREATE VIEW v_quant_ai_dataset AS
+    cur.execute("DROP VIEW IF EXISTS v_ai_features_intraday")
+    cur.execute("DROP VIEW IF EXISTS v_ai_features_aftermarket")
+    cur.execute("""
+        CREATE VIEW v_ai_features_intraday AS
         SELECT
-            i.symbol,
-            i.base_code,
-            i.name,
-            i.item_type,
-            i.market,
-            t.interval_type,
-            t.interval_minutes,
-            t.bars_per_day,
-            b.bar_time,
-            b.open_price,
-            b.high_price,
-            b.low_price,
-            b.close_price,
-            b.volume,
-            b.scan_time,
-            {feature_select},
-            {label_select}
-        FROM q_price_bars b
-        JOIN q_instruments i ON i.id = b.instrument_id
-        JOIN q_timeframes t ON t.id = b.timeframe_id
-        LEFT JOIN q_indicator_features f
-            ON f.instrument_id = b.instrument_id
-           AND f.timeframe_id = b.timeframe_id
-           AND f.bar_time = b.bar_time
-        LEFT JOIN q_ai_labels l
-            ON l.instrument_id = b.instrument_id
-           AND l.timeframe_id = b.timeframe_id
-           AND l.bar_time = b.bar_time
-    """)
-
-
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS k_bars (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            base_code TEXT,
-            name TEXT,
-            item_type TEXT,
-            interval_type TEXT,
-            bar_time TEXT,
-            open_price REAL,
-            high_price REAL,
-            low_price REAL,
-            close_price REAL,
-            volume REAL,
-            scan_time TEXT,
-            UNIQUE(symbol, interval_type, bar_time)
-        )
+            f.symbol, f.interval_type, f.bar_time,
+            s.base_code, s.name, s.item_type, s.market,
+            b.open_price, b.high_price, b.low_price, b.close_price, b.volume,
+            f.change_pct, f.gap_pct, f.upper_tail_ratio, f.lower_tail_ratio,
+            f.tail_ratio, f.day_range_pos,
+            f.ma5, f.ma10, f.ma20, f.ma60, f.ma120, f.ma_slope_20, f.bias20,
+            f.rsi14, f.k9, f.d9, f.j9, f.dif, f.macd, f.osc, f.williams_r14,
+            f.volume_ma5, f.volume_ratio, f.vol_std_score, f.vwap, f.obv, f.mfi14,
+            f.atr14, f.adx14, f.plus_di, f.minus_di,
+            f.bb_upper, f.bb_middle, f.bb_lower, f.bb_width, f.price_loc_bb,
+            f.high_52w, f.low_52w, f.dist_high_52w_pct, f.dist_low_52w_pct,
+            f.beta20, f.corr20, f.relative_strength_pct, f.stock_index_ratio,
+            f.daily_score, f.short_term_score, f.reason,
+            c.foreign_buy_sell, c.investment_trust_buy_sell,
+            c.dealer_buy_sell, c.institutional_total_buy_sell,
+            c.foreign_buy_sell_3d, c.investment_trust_buy_sell_3d,
+            c.dealer_buy_sell_3d, c.institutional_total_buy_sell_3d,
+            c.margin_change, c.short_change, c.margin_balance, c.short_balance,
+            c.margin_short_ratio, c.bullish_chip_score, c.bearish_chip_score,
+            c.chip_data_status, c.chip_data_date,
+            l.future_1d_return, l.future_3d_return,
+            l.max_upside_5d, l.drawdown_5d,
+            l.buy_signal, l.entry_price, l.ai_signal_score, l.label_ready
+        FROM k_bar_features f
+        JOIN k_bars b
+          ON b.symbol = f.symbol
+         AND b.interval_type = f.interval_type
+         AND b.bar_time = f.bar_time
+        JOIN symbols s ON s.symbol = f.symbol
+        LEFT JOIN chip_daily c
+          ON c.symbol = f.symbol
+         AND c.trade_date = (
+             SELECT MAX(trade_date) FROM chip_daily c2
+             WHERE c2.symbol = f.symbol
+               AND c2.trade_date < date(f.bar_time)
+         )
+        LEFT JOIN ai_labels l
+          ON l.symbol = f.symbol
+         AND l.interval_type = f.interval_type
+         AND l.bar_time = f.bar_time
     """)
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bars_symbol_interval_time
-        ON k_bars (symbol, interval_type, bar_time)
+        CREATE VIEW v_ai_features_aftermarket AS
+        SELECT
+            f.symbol, f.interval_type, f.bar_time,
+            s.base_code, s.name, s.item_type, s.market,
+            b.open_price, b.high_price, b.low_price, b.close_price, b.volume,
+            f.change_pct, f.gap_pct, f.upper_tail_ratio, f.lower_tail_ratio,
+            f.tail_ratio, f.day_range_pos,
+            f.ma5, f.ma10, f.ma20, f.ma60, f.ma120, f.ma_slope_20, f.bias20,
+            f.rsi14, f.k9, f.d9, f.j9, f.dif, f.macd, f.osc, f.williams_r14,
+            f.volume_ma5, f.volume_ratio, f.vol_std_score, f.vwap, f.obv, f.mfi14,
+            f.atr14, f.adx14, f.plus_di, f.minus_di,
+            f.bb_upper, f.bb_middle, f.bb_lower, f.bb_width, f.price_loc_bb,
+            f.high_52w, f.low_52w, f.dist_high_52w_pct, f.dist_low_52w_pct,
+            f.beta20, f.corr20, f.relative_strength_pct, f.stock_index_ratio,
+            f.daily_score, f.short_term_score, f.reason,
+            c.foreign_buy_sell, c.investment_trust_buy_sell,
+            c.dealer_buy_sell, c.institutional_total_buy_sell,
+            c.foreign_buy_sell_3d, c.investment_trust_buy_sell_3d,
+            c.dealer_buy_sell_3d, c.institutional_total_buy_sell_3d,
+            c.margin_change, c.short_change, c.margin_balance, c.short_balance,
+            c.margin_short_ratio, c.bullish_chip_score, c.bearish_chip_score,
+            c.chip_data_status, c.chip_data_date,
+            l.future_1d_return, l.future_3d_return,
+            l.max_upside_5d, l.drawdown_5d,
+            l.buy_signal, l.entry_price, l.ai_signal_score, l.label_ready
+        FROM k_bar_features f
+        JOIN k_bars b
+          ON b.symbol = f.symbol
+         AND b.interval_type = f.interval_type
+         AND b.bar_time = f.bar_time
+        JOIN symbols s ON s.symbol = f.symbol
+        LEFT JOIN chip_daily c
+          ON c.symbol = f.symbol
+         AND c.trade_date = date(f.bar_time)
+        LEFT JOIN ai_labels l
+          ON l.symbol = f.symbol
+         AND l.interval_type = f.interval_type
+         AND l.bar_time = f.bar_time
+        WHERE f.interval_type IN ('1d', '1wk')
     """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bars_interval_time
-        ON k_bars (interval_type, bar_time)
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_k_bars_item_type
-        ON k_bars (item_type, symbol)
-    """)
-
-    ensure_indicator_table(cur)
-    ensure_quant_schema(cur)
 
     conn.commit()
-    conn.close()
+
+    if own_conn:
+        conn.close()
 
 
 def log(message):
     result_text.insert(tk.END, message + "\n")
     result_text.see(tk.END)
     root.update()
+
+
+def warn(message):
+    log(f"WARNING: {message}")
+
+
+def is_missing(value):
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return True
+    return False
+
+
+def safe_float(value, default=None):
+    if is_missing(value):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(number) or math.isinf(number):
+        return default
+    return number
+
+
+def safe_text(value, default=""):
+    if is_missing(value):
+        return default
+    return str(value).strip()
+
+
+def gt(value, threshold):
+    return value is not None and value > threshold
+
+
+def ge(value, threshold):
+    return value is not None and value >= threshold
+
+
+def le(value, threshold):
+    return value is not None and value <= threshold
+
+
+def lt(value, threshold):
+    return value is not None and value < threshold
+
+
+def between(value, low, high):
+    return value is not None and low <= value <= high
+
+
+def parse_trade_date(value):
+    text = safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date()
+    except ValueError:
+        return None
 
 
 def normalize_code(code):
@@ -521,25 +525,23 @@ def read_stock_list():
 
 
 def fetch_yahoo_chart(symbol, range_value, interval):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    url = YAHOO_CHART_URL.format(symbol=urllib.parse.quote(symbol, safe=".^"))
     params = {
         "range": range_value,
         "interval": interval,
     }
+    query_url = f"{url}?{urllib.parse.urlencode(params)}"
 
     last_error = None
 
     for attempt in range(1, MAX_RETRY + 1):
         try:
-            res = requests.get(
-                url,
-                params=params,
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
+            request = urllib.request.Request(
+                query_url,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/json,text/plain,*/*"},
             )
-            res.raise_for_status()
-
-            data = res.json()
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT) as response:
+                data = json.loads(response.read().decode("utf-8"))
 
             if data.get("chart", {}).get("error"):
                 raise Exception(data["chart"]["error"])
@@ -592,6 +594,47 @@ def market_index_for_symbol(symbol):
     return "^TWII"
 
 
+def market_for_symbol(symbol):
+    if symbol.startswith("^"):
+        return "index"
+    if symbol.endswith(".TWO"):
+        return "TWO"
+    if symbol.endswith(".TW"):
+        return "TW"
+    return ""
+
+
+def strip_yahoo_suffix(symbol):
+    text = safe_text(symbol)
+    if text.endswith(".TWO"):
+        return text[:-4]
+    if text.endswith(".TW"):
+        return text[:-3]
+    return text
+
+
+def upsert_symbol(cur, symbol, base_code, name, item_type):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+        INSERT INTO symbols (symbol, base_code, name, item_type, market, first_seen, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET
+            base_code = excluded.base_code,
+            name = excluded.name,
+            item_type = excluded.item_type,
+            market = excluded.market,
+            updated_at = excluded.updated_at
+    """, (
+        symbol,
+        strip_yahoo_suffix(base_code),
+        name,
+        item_type,
+        market_for_symbol(symbol),
+        now,
+        now,
+    ))
+
+
 def save_bars(symbol, base_code, name, item_type, interval_type):
     config = YAHOO_CONFIG[interval_type]
     result = fetch_yahoo_chart(symbol, config["range"], config["interval"])
@@ -605,12 +648,14 @@ def save_bars(symbol, base_code, name, item_type, interval_type):
     closes = quote.get("close", [])
     volumes = quote.get("volume", [])
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = connect_db()
     cur = conn.cursor()
+    upsert_symbol(cur, symbol, base_code, name, item_type)
 
     cutoff = (datetime.now() - timedelta(days=KEEP_DAYS[interval_type])).strftime("%Y-%m-%d %H:%M:%S")
-    scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     saved_count = 0
+    price_rows = []
 
     for i, ts in enumerate(timestamps):
         close_price = closes[i] if i < len(closes) else None
@@ -624,16 +669,8 @@ def save_bars(symbol, base_code, name, item_type, interval_type):
         if bar_time < cutoff:
             continue
 
-        cur.execute("""
-            INSERT OR REPLACE INTO k_bars
-            (symbol, base_code, name, item_type, interval_type, bar_time,
-             open_price, high_price, low_price, close_price, volume, scan_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
+        price_rows.append((
             symbol,
-            base_code,
-            name,
-            item_type,
             interval_type,
             bar_time,
             opens[i] if i < len(opens) else None,
@@ -641,10 +678,24 @@ def save_bars(symbol, base_code, name, item_type, interval_type):
             lows[i] if i < len(lows) else None,
             close_price,
             volumes[i] if i < len(volumes) else None,
-            scan_time,
+            fetch_time,
         ))
 
-        saved_count += 1
+    if price_rows:
+        cur.executemany("""
+            INSERT INTO k_bars
+            (symbol, interval_type, bar_time, open_price, high_price, low_price,
+             close_price, volume, fetch_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, interval_type, bar_time) DO UPDATE SET
+                open_price = excluded.open_price,
+                high_price = excluded.high_price,
+                low_price = excluded.low_price,
+                close_price = excluded.close_price,
+                volume = excluded.volume,
+                fetch_time = excluded.fetch_time
+        """, price_rows)
+        saved_count = len(price_rows)
 
     cur.execute(
         "DELETE FROM k_bars WHERE interval_type = ? AND bar_time < ?",
@@ -697,6 +748,78 @@ def ema_series(values, period):
         result.append(ema)
 
     return result
+
+
+def score_row(row):
+    score = 0.0
+    reasons = []
+    close = row.get("close")
+
+    def add(points, reason):
+        nonlocal score
+        score += points
+        reasons.append(reason)
+
+    if close is not None and row.get("ma20") is not None and close > row["ma20"]:
+        add(2, "close>ma20")
+    if row.get("ma5") and row.get("ma10") and row.get("ma20") and row["ma5"] > row["ma10"] > row["ma20"]:
+        add(3, "ma5>ma10>ma20")
+    if row.get("ma20") and row.get("ma60") and row["ma20"] > row["ma60"]:
+        add(2, "ma20>ma60")
+    if row.get("ma60") and row.get("ma120") and row["ma60"] > row["ma120"]:
+        add(2, "ma60>ma120")
+    if row.get("ma_slope_20") is not None and row["ma_slope_20"] > 0:
+        add(2, "ma20 slope up")
+
+    if row.get("rsi14") is not None:
+        if 50 <= row["rsi14"] <= 70:
+            add(2, "rsi healthy")
+        elif 70 < row["rsi14"] <= 80:
+            add(1, "rsi strong")
+        elif row["rsi14"] > 85:
+            add(-2, "rsi overheated")
+        elif row["rsi14"] < 40:
+            add(-1, "rsi weak")
+
+    if row.get("k9") is not None and row.get("d9") is not None and row["k9"] > row["d9"]:
+        add(1, "kd bullish")
+    if row.get("osc") is not None and row["osc"] > 0:
+        add(2, "macd osc positive")
+
+    if row.get("volume_ratio") is not None:
+        if row["volume_ratio"] >= 1.5:
+            add(2, "volume expansion")
+        elif row["volume_ratio"] >= 1.2:
+            add(1, "volume above avg")
+
+    if row.get("adx14") is not None:
+        if row["adx14"] >= 25 and (row.get("plus_di") or 0) > (row.get("minus_di") or 0):
+            add(3, "strong adx uptrend")
+        elif row["adx14"] >= 20 and (row.get("plus_di") or 0) > (row.get("minus_di") or 0):
+            add(2, "adx uptrend")
+
+    if row.get("dist_high_52w_pct") is not None:
+        if row["dist_high_52w_pct"] >= -3:
+            add(2, "near 52w high")
+        elif row["dist_high_52w_pct"] >= -10:
+            add(1, "within 10pct high")
+
+    if row.get("dist_low_52w_pct") is not None and row["dist_low_52w_pct"] >= 20:
+        add(1, "above 52w low")
+
+    if row.get("atr14") is not None and close not in (None, 0):
+        atr_pct = row["atr14"] / close * 100
+        if atr_pct <= 8:
+            add(1, "atr controlled")
+        elif atr_pct > 12:
+            add(-1, "atr too wide")
+
+    if row.get("gap_pct") is not None and row["gap_pct"] > 7:
+        add(-2, "large gap")
+    if row.get("upper_tail_ratio") is not None and row["upper_tail_ratio"] > 55:
+        add(-1, "large upper tail")
+
+    return score, "; ".join(reasons)
 
 
 def calculate_beta_corr(stock_returns, index_returns, period, index):
@@ -885,6 +1008,7 @@ def calculate_indicators(rows, index_return_map=None, index_close_map=None):
     cumulative_pv = 0
     cumulative_volume = 0
     vwap_list = []
+    current_vwap_date = None
 
     typical_prices = []
     raw_money_flow = []
@@ -894,6 +1018,13 @@ def calculate_indicators(rows, index_return_map=None, index_close_map=None):
         high = highs[i]
         low = lows[i]
         volume = volumes[i] or 0
+        interval_type = rows[i].get("interval_type")
+        bar_date = rows[i].get("bar_time", "")[:10]
+
+        if interval_type in ("1m", "5m", "30m") and bar_date != current_vwap_date:
+            cumulative_pv = 0
+            cumulative_volume = 0
+            current_vwap_date = bar_date
 
         if close is not None:
             cumulative_pv += close * volume
@@ -1211,6 +1342,8 @@ def calculate_indicators(rows, index_return_map=None, index_close_map=None):
 
         row["short_term_score"] = score
         add_indicator_aliases(row)
+        row["close_position"] = row.get("day_range_pos")
+        row["daily_score"], row["reason"] = score_row(row)
 
     add_ai_labels(rows)
 
@@ -1228,15 +1361,16 @@ def round_value(value):
 
 
 def load_rows(symbol, interval_type):
-    conn = sqlite3.connect(DB_NAME)
+    conn = connect_db()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT symbol, base_code, name, item_type, interval_type, bar_time,
-               open_price, high_price, low_price, close_price, volume, scan_time
-        FROM k_bars
-        WHERE symbol = ? AND interval_type = ?
-        ORDER BY bar_time ASC
+        SELECT b.symbol, s.base_code, s.name, s.item_type, b.interval_type, b.bar_time,
+               b.open_price, b.high_price, b.low_price, b.close_price, b.volume, b.fetch_time
+        FROM k_bars b
+        JOIN symbols s ON s.symbol = b.symbol
+        WHERE b.symbol = ? AND b.interval_type = ?
+        ORDER BY b.bar_time ASC
     """, (symbol, interval_type))
 
     rows = []
@@ -1254,6 +1388,7 @@ def load_rows(symbol, interval_type):
             "low": r[8],
             "close": r[9],
             "volume": r[10],
+            "fetch_time": r[11],
             "scan_time": r[11],
         })
 
@@ -1282,10 +1417,15 @@ def build_index_maps(index_symbol, interval_type):
 
 
 def get_all_rows_with_indicators():
-    conn = sqlite3.connect(DB_NAME)
+    conn = connect_db()
     cur = conn.cursor()
 
-    cur.execute("SELECT DISTINCT symbol, item_type FROM k_bars ORDER BY symbol")
+    cur.execute("""
+        SELECT DISTINCT s.symbol, s.item_type
+        FROM symbols s
+        JOIN k_bars b ON b.symbol = s.symbol
+        ORDER BY s.symbol
+    """)
     symbols = cur.fetchall()
 
     conn.close()
@@ -1295,8 +1435,6 @@ def get_all_rows_with_indicators():
     for interval_type in INTERVALS:
         twii_returns, twii_closes = build_index_maps("^TWII", interval_type)
         twoii_returns, twoii_closes = build_index_maps("^TWOII", interval_type)
-
-        export_cutoff = (datetime.now() - timedelta(days=EXPORT_DAYS[interval_type])).strftime("%Y-%m-%d %H:%M:%S")
 
         for symbol, item_type in symbols:
             rows = load_rows(symbol, interval_type)
@@ -1315,10 +1453,7 @@ def get_all_rows_with_indicators():
                 index_returns, index_closes = None, None
 
             rows = calculate_indicators(rows, index_returns, index_closes)
-
-            for row in rows:
-                if row["bar_time"] >= export_cutoff:
-                    all_rows.append(row)
+            all_rows.extend(rows)
 
     return all_rows
 
@@ -1341,414 +1476,934 @@ def indicator_db_value(row, column_name, timestamp):
     return row.get(source_map.get(column_name, column_name))
 
 
-def market_for_symbol(symbol):
-    if symbol.startswith("^"):
-        return "index"
-    if symbol.endswith(".TWO"):
-        return "TWO"
-    if symbol.endswith(".TW"):
-        return "TW"
-    return ""
-
-
-def save_quant_rows(cur, rows, timestamp):
-    ensure_quant_schema(cur)
-
-    cur.execute("""
-        DELETE FROM q_price_bars
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM k_bars kb
-            JOIN q_instruments qi ON qi.symbol = kb.symbol
-            JOIN q_timeframes qt ON qt.interval_type = kb.interval_type
-            WHERE qi.id = q_price_bars.instrument_id
-              AND qt.id = q_price_bars.timeframe_id
-              AND kb.bar_time = q_price_bars.bar_time
-        )
-    """)
-    cur.execute("""
-        DELETE FROM q_indicator_features
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM q_price_bars qb
-            WHERE qb.instrument_id = q_indicator_features.instrument_id
-              AND qb.timeframe_id = q_indicator_features.timeframe_id
-              AND qb.bar_time = q_indicator_features.bar_time
-        )
-    """)
-    cur.execute("""
-        DELETE FROM q_ai_labels
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM q_price_bars qb
-            WHERE qb.instrument_id = q_ai_labels.instrument_id
-              AND qb.timeframe_id = q_ai_labels.timeframe_id
-              AND qb.bar_time = q_ai_labels.bar_time
-        )
-    """)
-
+def save_features(conn, rows):
     if not rows:
         return 0
 
-    for row in rows:
-        cur.execute("""
-            INSERT INTO q_instruments (symbol, base_code, name, item_type, market, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol) DO UPDATE SET
-                base_code = excluded.base_code,
-                name = excluded.name,
-                item_type = excluded.item_type,
-                market = excluded.market,
-                updated_at = excluded.updated_at
-        """, (
-            row["symbol"],
-            row["base_code"],
-            row["name"],
-            row["item_type"],
-            market_for_symbol(row["symbol"]),
-            timestamp,
-        ))
+    columns = [name for name, _ in FEATURE_COLUMNS]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    placeholders = ", ".join(["?"] * (3 + len(columns) + 1))
+    column_sql = ", ".join(["symbol", "interval_type", "bar_time"] + columns + ["updated_at"])
+    update_sql = ", ".join(f"{name} = excluded.{name}" for name in columns + ["updated_at"])
 
-    instrument_ids = {
-        symbol: instrument_id
-        for symbol, instrument_id in cur.execute("SELECT symbol, id FROM q_instruments")
-    }
-    timeframe_ids = {
-        interval_type: timeframe_id
-        for interval_type, timeframe_id in cur.execute("SELECT interval_type, id FROM q_timeframes")
-    }
-
-    price_rows = []
-    feature_rows = []
-    label_rows = []
-    feature_columns = [name for name, _ in QUANT_FEATURE_COLUMNS]
-    label_columns = [name for name, _ in AI_LABEL_COLUMNS]
-
-    for row in rows:
-        instrument_id = instrument_ids[row["symbol"]]
-        timeframe_id = timeframe_ids[row["interval_type"]]
-
-        price_rows.append([
-            instrument_id,
-            timeframe_id,
-            row["bar_time"],
-            row.get("open"),
-            row.get("high"),
-            row.get("low"),
-            row.get("close"),
-            row.get("volume"),
-            row.get("scan_time"),
-        ])
-
-        feature_rows.append(
-            [instrument_id, timeframe_id, row["bar_time"]]
-            + [row.get(column_name) for column_name in feature_columns]
-            + [timestamp]
-        )
-
-        label_rows.append(
-            [instrument_id, timeframe_id, row["bar_time"]]
-            + [row.get(column_name) for column_name in label_columns]
-            + [timestamp, timestamp]
-        )
-
-    cur.executemany("""
-        INSERT INTO q_price_bars
-        (instrument_id, timeframe_id, bar_time, open_price, high_price, low_price,
-         close_price, volume, scan_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(instrument_id, timeframe_id, bar_time) DO UPDATE SET
-            open_price = excluded.open_price,
-            high_price = excluded.high_price,
-            low_price = excluded.low_price,
-            close_price = excluded.close_price,
-            volume = excluded.volume,
-            scan_time = excluded.scan_time
-    """, price_rows)
-
-    feature_placeholders = ", ".join(["?"] * (3 + len(feature_columns) + 1))
-    feature_column_sql = ", ".join(
-        ["instrument_id", "timeframe_id", "bar_time"] + feature_columns + ["updated_at"]
-    )
-    feature_update_sql = ", ".join(
-        f"{column_name} = excluded.{column_name}"
-        for column_name in feature_columns + ["updated_at"]
-    )
-    cur.executemany(
+    conn.executemany(
         f"""
-        INSERT INTO q_indicator_features ({feature_column_sql})
-        VALUES ({feature_placeholders})
-        ON CONFLICT(instrument_id, timeframe_id, bar_time)
-        DO UPDATE SET {feature_update_sql}
+        INSERT INTO k_bar_features ({column_sql})
+        VALUES ({placeholders})
+        ON CONFLICT(symbol, interval_type, bar_time)
+        DO UPDATE SET {update_sql}
         """,
-        feature_rows,
+        [
+            [row["symbol"], row["interval_type"], row["bar_time"]]
+            + [row.get(column_name) for column_name in columns]
+            + [now]
+            for row in rows
+        ],
     )
-
-    label_placeholders = ", ".join(["?"] * (3 + len(label_columns) + 2))
-    label_column_sql = ", ".join(
-        ["instrument_id", "timeframe_id", "bar_time"] + label_columns + ["created_at", "updated_at"]
-    )
-    label_update_sql = ", ".join(
-        f"{column_name} = excluded.{column_name}"
-        for column_name in label_columns + ["updated_at"]
-    )
-    cur.executemany(
-        f"""
-        INSERT INTO q_ai_labels ({label_column_sql})
-        VALUES ({label_placeholders})
-        ON CONFLICT(instrument_id, timeframe_id, bar_time)
-        DO UPDATE SET {label_update_sql}
-        """,
-        label_rows,
-    )
-
     return len(rows)
 
 
-def save_indicator_rows(rows):
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
+def save_ai_labels(conn, rows):
+    if not rows:
+        return 0
 
-    ensure_indicator_table(cur)
-    ensure_quant_schema(cur)
+    columns = [name for name, _ in AI_LABEL_COLUMNS]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    placeholders = ", ".join(["?"] * (3 + len(columns) + 2))
+    column_sql = ", ".join(["symbol", "interval_type", "bar_time"] + columns + ["created_at", "updated_at"])
+    update_sql = ", ".join(f"{name} = excluded.{name}" for name in columns + ["updated_at"])
 
-    cur.execute("""
-        DELETE FROM k_bar_indicators
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM k_bars
-            WHERE k_bars.symbol = k_bar_indicators.symbol
-              AND k_bars.interval_type = k_bar_indicators.interval_type
-              AND k_bars.bar_time = k_bar_indicators.bar_time
-        )
-    """)
+    conn.executemany(
+        f"""
+        INSERT INTO ai_labels ({column_sql})
+        VALUES ({placeholders})
+        ON CONFLICT(symbol, interval_type, bar_time)
+        DO UPDATE SET {update_sql}
+        """,
+        [
+            [row["symbol"], row["interval_type"], row["bar_time"]]
+            + [row.get(column_name) for column_name in columns]
+            + [now, now]
+            for row in rows
+        ],
+    )
+    return len(rows)
+
+
+def read_csv_dicts(path):
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+    except Exception as exc:
+        warn(f"讀取 cache 失敗 {os.path.basename(path)}: {exc}")
+        return []
+
+
+def write_csv_dicts(path, rows):
+    if not rows:
+        return
+    fieldnames = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def chip_cache_path(kind, trade_date):
+    return os.path.join(CHIP_CACHE_DIR, f"{kind}_{trade_date}.csv")
+
+
+def compact_number(value):
+    if is_missing(value):
+        return 0.0
+    text = str(value).strip()
+    text = text.replace(",", "").replace("--", "0").replace("X", "0").replace("+", "")
+    if text in ("", "-", "N/A", "None"):
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def normalize_stock_id(value):
+    text = safe_text(value)
+    if "." in text:
+        text = strip_yahoo_suffix(text)
+    return text
+
+
+def records_from_fields(fields, data_rows):
+    records = []
+    for values in data_rows or []:
+        record = {}
+        for index, field in enumerate(fields or []):
+            key = safe_text(field) or f"field_{index}"
+            if key in record:
+                key = f"{key}_{index}"
+            record[key] = values[index] if index < len(values) else ""
+        records.append(record)
+    return records
+
+
+def twse_date(trade_date):
+    return safe_text(trade_date).replace("-", "")
+
+
+def roc_date(trade_date):
+    parsed = parse_trade_date(trade_date)
+    if parsed is None:
+        return ""
+    return f"{parsed.year - 1911:03d}/{parsed.month:02d}/{parsed.day:02d}"
+
+
+def fetch_json_url(url, params, stats, source_name):
+    query_url = f"{url}?{urllib.parse.urlencode(params)}"
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json,text/plain,*/*"}
+    request = urllib.request.Request(query_url, headers=headers)
+    stats["api_request_count"] += 1
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=SSL_CONTEXT) as response:
+            return json.loads(response.read().decode("utf-8-sig")), "api"
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429):
+            stats["rate_limited"] = True
+            warn(f"{source_name} HTTP {exc.code}，籌碼資料改用 cache 或 fallback。")
+            return None, "rate_limited"
+        stats["api_error"] = True
+        warn(f"{source_name} HTTP error: {exc}")
+        return None, "api_failed"
+    except Exception as exc:
+        stats["api_error"] = True
+        warn(f"{source_name} API 失敗: {exc}")
+        return None, "api_failed"
+
+
+def fetch_official_rows(kind, trade_date, stats):
+    os.makedirs(CHIP_CACHE_DIR, exist_ok=True)
+    cache_path = chip_cache_path(kind, trade_date)
+    if os.path.exists(cache_path):
+        stats["cache_hit_count"] += 1
+        return read_csv_dicts(cache_path), "cache"
+
+    try:
+        if kind == "twse_institutional":
+            payload, status = fetch_json_url(
+                TWSE_INSTITUTIONAL_URL,
+                {"date": twse_date(trade_date), "selectType": "ALLBUT0999", "response": "json"},
+                stats,
+                kind,
+            )
+            rows = normalize_twse_institutional_payload(payload) if payload else []
+        elif kind == "twse_margin":
+            payload, status = fetch_json_url(
+                TWSE_MARGIN_URL,
+                {"date": twse_date(trade_date), "selectType": "ALL", "response": "json"},
+                stats,
+                kind,
+            )
+            rows = normalize_twse_margin_payload(payload) if payload else []
+        elif kind == "tpex_institutional":
+            payload, status = fetch_json_url(
+                TPEX_INSTITUTIONAL_URL,
+                {"l": "zh-tw", "se": "EW", "t": "D", "d": roc_date(trade_date), "s": "0,asc,0"},
+                stats,
+                kind,
+            )
+            rows = normalize_tpex_institutional_payload(payload) if payload else []
+        elif kind == "tpex_margin":
+            payload, status = fetch_json_url(
+                TPEX_MARGIN_URL,
+                {"l": "zh-tw", "d": roc_date(trade_date), "s": "0,asc,0"},
+                stats,
+                kind,
+            )
+            rows = normalize_tpex_margin_payload(payload) if payload else []
+        else:
+            rows = []
+            status = "api_failed"
+    except Exception as exc:
+        stats["api_error"] = True
+        warn(f"{kind} 解析失敗: {exc}")
+        rows = []
+        status = "api_failed"
 
     if rows:
-        columns = [name for name, _ in INDICATOR_DB_COLUMNS]
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        placeholders = ", ".join(["?"] * len(columns))
-        column_names = ", ".join(columns)
-        update_columns = [
-            name for name in columns
-            if name not in ("symbol", "interval_type", "bar_time", "created_at")
-        ]
-        update_sql = ", ".join(f"{name} = excluded.{name}" for name in update_columns)
+        write_csv_dicts(cache_path, rows)
+    return rows, status
 
-        cur.executemany(
-            f"""
-            INSERT INTO k_bar_indicators ({column_names})
-            VALUES ({placeholders})
-            ON CONFLICT(symbol, interval_type, bar_time)
-            DO UPDATE SET {update_sql}
-            """,
-            [
-                [indicator_db_value(row, column_name, now) for column_name in columns]
-                for row in rows
-            ],
+
+def normalize_twse_institutional_payload(payload):
+    if not payload or payload.get("stat") != "OK":
+        return []
+    records = records_from_fields(payload.get("fields"), payload.get("data"))
+    normalized = []
+    for row in records:
+        stock_id = normalize_stock_id(row.get("證券代號"))
+        if not stock_id:
+            continue
+        foreign = compact_number(row.get("外陸資買賣超股數(不含外資自營商)")) + compact_number(row.get("外資自營商買賣超股數"))
+        trust = compact_number(row.get("投信買賣超股數"))
+        dealer = compact_number(row.get("自營商買賣超股數"))
+        total = compact_number(row.get("三大法人買賣超股數"))
+        normalized.append({
+            "stock_id": stock_id,
+            "foreign_buy_sell": foreign,
+            "investment_trust_buy_sell": trust,
+            "dealer_buy_sell": dealer,
+            "institutional_total_buy_sell": total if total else foreign + trust + dealer,
+        })
+    return normalized
+
+
+def normalize_tpex_institutional_payload(payload):
+    tables = payload.get("tables") if payload else []
+    if not tables:
+        return []
+    data_rows = tables[0].get("data") or []
+    normalized = []
+    for values in data_rows:
+        if len(values) < 24:
+            continue
+        stock_id = normalize_stock_id(values[0])
+        if not stock_id:
+            continue
+        foreign = compact_number(values[10])
+        trust = compact_number(values[13])
+        dealer = compact_number(values[22])
+        total = compact_number(values[23])
+        normalized.append({
+            "stock_id": stock_id,
+            "foreign_buy_sell": foreign,
+            "investment_trust_buy_sell": trust,
+            "dealer_buy_sell": dealer,
+            "institutional_total_buy_sell": total if total else foreign + trust + dealer,
+        })
+    return normalized
+
+
+def normalize_twse_margin_payload(payload):
+    if not payload or payload.get("stat") != "OK":
+        return []
+    tables = payload.get("tables") or []
+    if len(tables) < 2:
+        return []
+    data_rows = tables[1].get("data") or []
+    normalized = []
+    for values in data_rows:
+        if len(values) < 13:
+            continue
+        stock_id = normalize_stock_id(values[0])
+        margin_prev = compact_number(values[5])
+        margin_balance = compact_number(values[6])
+        short_prev = compact_number(values[11])
+        short_balance = compact_number(values[12])
+        normalized.append({
+            "stock_id": stock_id,
+            "margin_change": margin_balance - margin_prev,
+            "short_change": short_balance - short_prev,
+            "margin_balance": margin_balance,
+            "short_balance": short_balance,
+            "margin_short_ratio": 0 if margin_balance == 0 else short_balance / margin_balance,
+        })
+    return normalized
+
+
+def normalize_tpex_margin_payload(payload):
+    tables = payload.get("tables") if payload else []
+    if not tables:
+        return []
+    data_rows = tables[0].get("data") or []
+    normalized = []
+    for values in data_rows:
+        if len(values) < 15:
+            continue
+        stock_id = normalize_stock_id(values[0])
+        margin_prev = compact_number(values[2])
+        margin_balance = compact_number(values[6])
+        short_prev = compact_number(values[10])
+        short_balance = compact_number(values[14])
+        normalized.append({
+            "stock_id": stock_id,
+            "margin_change": margin_balance - margin_prev,
+            "short_change": short_balance - short_prev,
+            "margin_balance": margin_balance,
+            "short_balance": short_balance,
+            "margin_short_ratio": 0 if margin_balance == 0 else short_balance / margin_balance,
+        })
+    return normalized
+
+
+def has_enough_chip_rows(rows):
+    return len(rows) >= 100
+
+
+def group_official_institutional_rows(rows, stats):
+    grouped = {}
+    foreign_rows = 0
+    trust_rows = 0
+    dealer_rows = 0
+    for row in rows:
+        stock_id = normalize_stock_id(row.get("stock_id"))
+        if not stock_id:
+            continue
+        item = grouped.setdefault(stock_id, {
+            "foreign_buy_sell": 0.0,
+            "investment_trust_buy_sell": 0.0,
+            "dealer_buy_sell": 0.0,
+            "institutional_total_buy_sell": 0.0,
+        })
+        foreign = compact_number(row.get("foreign_buy_sell"))
+        trust = compact_number(row.get("investment_trust_buy_sell"))
+        dealer = compact_number(row.get("dealer_buy_sell"))
+        total = compact_number(row.get("institutional_total_buy_sell"))
+        item["foreign_buy_sell"] += foreign
+        item["investment_trust_buy_sell"] += trust
+        item["dealer_buy_sell"] += dealer
+        item["institutional_total_buy_sell"] += total if total else foreign + trust + dealer
+        if foreign:
+            foreign_rows += 1
+        if trust:
+            trust_rows += 1
+        if dealer:
+            dealer_rows += 1
+
+    stats["foreign_rows_count"] += foreign_rows
+    stats["investment_trust_rows_count"] += trust_rows
+    stats["dealer_rows_count"] += dealer_rows
+    stats["institutional_groupby_stock_count"] = max(
+        stats.get("institutional_groupby_stock_count", 0),
+        len(grouped),
+    )
+    return grouped
+
+
+def group_official_margin_rows(rows):
+    grouped = {}
+    for row in rows:
+        stock_id = normalize_stock_id(row.get("stock_id"))
+        if not stock_id:
+            continue
+        grouped[stock_id] = {
+            "margin_change": compact_number(row.get("margin_change")),
+            "short_change": compact_number(row.get("short_change")),
+            "margin_balance": compact_number(row.get("margin_balance")),
+            "short_balance": compact_number(row.get("short_balance")),
+            "margin_short_ratio": compact_number(row.get("margin_short_ratio")),
+        }
+    return grouped
+
+
+def fetch_official_chip_data(latest_trade_date):
+    stats = {
+        "api_request_count": 0,
+        "cache_hit_count": 0,
+        "chip_date_list": [],
+        "chip_data_date": "",
+        "chip_data_source": "official_twse_tpex",
+        "rate_limited": False,
+        "api_error": False,
+        "institutional_name_column": "official_column_mapping",
+        "foreign_rows_count": 0,
+        "investment_trust_rows_count": 0,
+        "dealer_rows_count": 0,
+        "institutional_groupby_stock_count": 0,
+        "institutional_stock_count": 0,
+        "margin_stock_count": 0,
+    }
+    empty_result = {
+        "by_stock": {},
+        "stats": stats,
+        "global_status": "missing_chip_data",
+    }
+    if latest_trade_date is None:
+        warn("找不到 latest_trade_date，籌碼資料 fallback 成純技術面版本。")
+        return empty_result
+
+    fetched_by_date = {}
+    candidate_dates = []
+    for offset in range(10):
+        candidate = latest_trade_date - timedelta(days=offset)
+        if candidate.weekday() >= 5:
+            continue
+        candidate_dates.append(candidate.isoformat())
+
+    for chip_date in candidate_dates:
+        twse_institutional_rows, _ = fetch_official_rows("twse_institutional", chip_date, stats)
+        twse_margin_rows, _ = fetch_official_rows("twse_margin", chip_date, stats)
+        tpex_institutional_rows, _ = fetch_official_rows("tpex_institutional", chip_date, stats)
+        tpex_margin_rows, _ = fetch_official_rows("tpex_margin", chip_date, stats)
+        institutional_rows = twse_institutional_rows + tpex_institutional_rows
+        margin_rows = twse_margin_rows + tpex_margin_rows
+        fetched_by_date[chip_date] = {
+            "institutional_rows": institutional_rows,
+            "margin_rows": margin_rows,
+        }
+        if has_enough_chip_rows(institutional_rows) or has_enough_chip_rows(margin_rows):
+            stats["chip_date_list"].append(chip_date)
+        if len(stats["chip_date_list"]) >= 5:
+            break
+
+    if not stats["chip_date_list"]:
+        if stats["rate_limited"]:
+            empty_result["global_status"] = "rate_limited"
+        elif stats["api_error"]:
+            empty_result["global_status"] = "api_failed"
+        return empty_result
+
+    chip_data_date = stats["chip_date_list"][0]
+    stats["chip_data_date"] = chip_data_date
+    latest_payload = fetched_by_date.get(chip_data_date, {})
+    latest_institutional = group_official_institutional_rows(
+        latest_payload.get("institutional_rows", []),
+        stats,
+    )
+    latest_margin = group_official_margin_rows(latest_payload.get("margin_rows", []))
+
+    institutional_3d = {}
+    for chip_date in stats["chip_date_list"][:3]:
+        payload = fetched_by_date.get(chip_date, {})
+        daily = group_official_institutional_rows(payload.get("institutional_rows", []), stats)
+        for stock_id, item in daily.items():
+            target = institutional_3d.setdefault(stock_id, {
+                "foreign_buy_sell_3d": 0.0,
+                "investment_trust_buy_sell_3d": 0.0,
+                "dealer_buy_sell_3d": 0.0,
+                "institutional_total_buy_sell_3d": 0.0,
+            })
+            target["foreign_buy_sell_3d"] += item.get("foreign_buy_sell", 0)
+            target["investment_trust_buy_sell_3d"] += item.get("investment_trust_buy_sell", 0)
+            target["dealer_buy_sell_3d"] += item.get("dealer_buy_sell", 0)
+            target["institutional_total_buy_sell_3d"] += item.get("institutional_total_buy_sell", 0)
+
+    by_stock = {}
+    all_stock_ids = set(latest_institutional) | set(latest_margin) | set(institutional_3d)
+    for stock_id in all_stock_ids:
+        by_stock[stock_id] = {}
+        by_stock[stock_id].update(latest_institutional.get(stock_id, {}))
+        by_stock[stock_id].update(institutional_3d.get(stock_id, {}))
+        by_stock[stock_id].update(latest_margin.get(stock_id, {}))
+
+    stats["institutional_stock_count"] = len(latest_institutional)
+    stats["margin_stock_count"] = len(latest_margin)
+    return {
+        "by_stock": by_stock,
+        "stats": stats,
+        "global_status": "ok",
+    }
+
+
+def add_reason(reasons, text):
+    if text:
+        reasons.append(text)
+
+
+def chip_status_for_row(chip_result, has_institutional, has_margin):
+    global_status = chip_result.get("global_status", "missing_chip_data")
+    if global_status in ("api_failed", "rate_limited"):
+        return global_status
+    if has_institutional and has_margin:
+        return "ok"
+    if has_institutional or has_margin:
+        return "partial_chip_data"
+    return "missing_chip_data"
+
+
+def score_bullish_chip(row):
+    score = 0.0
+    reasons = []
+    foreign = safe_float(row.get("foreign_buy_sell"), 0)
+    trust = safe_float(row.get("investment_trust_buy_sell"), 0)
+    dealer = safe_float(row.get("dealer_buy_sell"), 0)
+    total = safe_float(row.get("institutional_total_buy_sell"), 0)
+    foreign_3d = safe_float(row.get("foreign_buy_sell_3d"), 0)
+    trust_3d = safe_float(row.get("investment_trust_buy_sell_3d"), 0)
+    total_3d = safe_float(row.get("institutional_total_buy_sell_3d"), 0)
+    margin_change = safe_float(row.get("margin_change"), 0)
+    short_change = safe_float(row.get("short_change"), 0)
+    change_pct = safe_float(row.get("change_pct"), 0)
+
+    if foreign > 0:
+        score += 2
+        add_reason(reasons, "外資買超")
+    if trust > 0:
+        score += 3
+        add_reason(reasons, "投信買超")
+    if dealer > 0:
+        score += 1
+        add_reason(reasons, "自營商買超")
+    if total > 0:
+        score += 2
+        add_reason(reasons, "三大法人合計買超")
+    if foreign_3d > 0:
+        score += 2
+        add_reason(reasons, "外資3日買超")
+    if trust_3d > 0:
+        score += 3
+        add_reason(reasons, "投信3日買超")
+    if total_3d > 0:
+        score += 2
+        add_reason(reasons, "法人3日合計買超")
+    if margin_change < 0 and change_pct > 0:
+        score += 3
+        add_reason(reasons, "融資減少且股價上漲")
+    if margin_change > 0 and change_pct > 0:
+        score -= 1
+        add_reason(reasons, "融資增加追價疑慮")
+    if short_change > 0 and change_pct > 0:
+        score += 2
+        add_reason(reasons, "融券增加具軋空潛力")
+    if total < 0:
+        score -= 3
+        add_reason(reasons, "法人合計賣超")
+    if trust < 0:
+        score -= 3
+        add_reason(reasons, "投信賣超")
+
+    return score, "; ".join(reasons)
+
+
+def score_bearish_chip(row):
+    score = 0.0
+    reasons = []
+    foreign = safe_float(row.get("foreign_buy_sell"), 0)
+    trust = safe_float(row.get("investment_trust_buy_sell"), 0)
+    dealer = safe_float(row.get("dealer_buy_sell"), 0)
+    total = safe_float(row.get("institutional_total_buy_sell"), 0)
+    foreign_3d = safe_float(row.get("foreign_buy_sell_3d"), 0)
+    trust_3d = safe_float(row.get("investment_trust_buy_sell_3d"), 0)
+    total_3d = safe_float(row.get("institutional_total_buy_sell_3d"), 0)
+    margin_change = safe_float(row.get("margin_change"), 0)
+    short_change = safe_float(row.get("short_change"), 0)
+    upper_tail_ratio = safe_float(row.get("upper_tail_ratio"), 0)
+    change_pct = safe_float(row.get("change_pct"), 0)
+    close = safe_float(row.get("close"), 0)
+    open_price = safe_float(row.get("open"), 0)
+    ma20 = safe_float(row.get("ma20"), 0)
+    close_position = safe_float(row.get("close_position"), 0)
+
+    if foreign < 0:
+        score += 2
+        add_reason(reasons, "外資賣超")
+    if trust < 0:
+        score += 3
+        add_reason(reasons, "投信賣超")
+    if dealer < 0:
+        score += 1
+        add_reason(reasons, "自營商賣超")
+    if total < 0:
+        score += 2
+        add_reason(reasons, "三大法人合計賣超")
+    if foreign_3d < 0:
+        score += 2
+        add_reason(reasons, "外資3日賣超")
+    if trust_3d < 0:
+        score += 3
+        add_reason(reasons, "投信3日賣超")
+    if total_3d < 0:
+        score += 2
+        add_reason(reasons, "法人3日合計賣超")
+    if margin_change > 0 and upper_tail_ratio > 40:
+        score += 3
+        add_reason(reasons, "融資增加且長上影")
+    if margin_change > 0 and close < open_price:
+        score += 3
+        add_reason(reasons, "融資增加且收黑K")
+    if margin_change > 0 and ma20 and close < ma20:
+        score += 2
+        add_reason(reasons, "融資增加且跌破MA20")
+    if short_change > 0 and change_pct > 0:
+        score -= 2
+        add_reason(reasons, "融券增加但股價強，防軋空")
+    if short_change > 0 and close_position > 0.7:
+        score -= 3
+        add_reason(reasons, "融券增加且收盤強，防軋空")
+    if trust > 0:
+        score -= 3
+        add_reason(reasons, "投信買超防下跌誤判")
+    if total > 0:
+        score -= 2
+        add_reason(reasons, "法人合計買超防下跌誤判")
+
+    return score, "; ".join(reasons)
+
+
+def get_latest_trade_date(conn):
+    row = conn.execute("""
+        SELECT MAX(date(bar_time))
+        FROM k_bars
+        WHERE interval_type = '1d'
+    """).fetchone()
+    return parse_trade_date(row[0]) if row and row[0] else None
+
+
+def load_latest_daily_feature_rows(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            s.symbol, s.base_code, b.bar_time, b.open_price, b.high_price,
+            b.low_price, b.close_price, b.volume,
+            f.change_pct, f.upper_tail_ratio, f.day_range_pos, f.ma20
+        FROM symbols s
+        LEFT JOIN k_bars b
+          ON b.symbol = s.symbol
+         AND b.interval_type = '1d'
+         AND b.bar_time = (
+             SELECT MAX(b2.bar_time)
+             FROM k_bars b2
+             WHERE b2.symbol = s.symbol
+               AND b2.interval_type = '1d'
+         )
+        LEFT JOIN k_bar_features f
+          ON f.symbol = b.symbol
+         AND f.interval_type = b.interval_type
+         AND f.bar_time = b.bar_time
+        WHERE s.item_type != 'index'
+    """)
+
+    rows = {}
+    for r in cur.fetchall():
+        rows[r[0]] = {
+            "symbol": r[0],
+            "base_code": r[1],
+            "bar_time": r[2],
+            "open": r[3],
+            "high": r[4],
+            "low": r[5],
+            "close": r[6],
+            "volume": r[7],
+            "change_pct": r[8],
+            "upper_tail_ratio": r[9],
+            "close_position": r[10],
+            "ma20": r[11],
+        }
+    return rows
+
+
+def save_chip_daily(conn, chip_result, latest_trade_date):
+    if latest_trade_date is None:
+        return 0
+
+    chip_by_stock = chip_result.get("by_stock", {})
+    stats = chip_result.get("stats", {})
+    feature_rows = load_latest_daily_feature_rows(conn)
+    trade_date = latest_trade_date.isoformat()
+    chip_data_date = stats.get("chip_data_date", "")
+    chip_data_source = stats.get("chip_data_source", "official_twse_tpex")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    output_rows = []
+    numeric_chip_fields = [
+        "foreign_buy_sell",
+        "investment_trust_buy_sell",
+        "dealer_buy_sell",
+        "institutional_total_buy_sell",
+        "foreign_buy_sell_3d",
+        "investment_trust_buy_sell_3d",
+        "dealer_buy_sell_3d",
+        "institutional_total_buy_sell_3d",
+        "margin_change",
+        "short_change",
+        "margin_balance",
+        "short_balance",
+        "margin_short_ratio",
+    ]
+
+    for symbol, row in feature_rows.items():
+        base_code = normalize_stock_id(row.get("base_code"))
+        chip = chip_by_stock.get(base_code, {})
+        merged = dict(row)
+
+        for field in numeric_chip_fields:
+            merged[field] = safe_float(chip.get(field), 0)
+
+        has_institutional = any(
+            merged.get(field) != 0
+            for field in (
+                "foreign_buy_sell",
+                "investment_trust_buy_sell",
+                "dealer_buy_sell",
+                "institutional_total_buy_sell",
+            )
         )
+        has_margin = any(
+            merged.get(field) != 0
+            for field in ("margin_change", "short_change", "margin_balance", "short_balance")
+        )
+        status = chip_status_for_row(chip_result, has_institutional, has_margin)
+        bullish_score, bullish_reason = score_bullish_chip(merged)
+        bearish_score, bearish_reason = score_bearish_chip(merged)
 
-    save_quant_rows(cur, rows, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        output_rows.append([
+            symbol,
+            base_code,
+            trade_date,
+            merged["foreign_buy_sell"],
+            merged["investment_trust_buy_sell"],
+            merged["dealer_buy_sell"],
+            merged["institutional_total_buy_sell"],
+            merged["foreign_buy_sell_3d"],
+            merged["investment_trust_buy_sell_3d"],
+            merged["dealer_buy_sell_3d"],
+            merged["institutional_total_buy_sell_3d"],
+            merged["margin_change"],
+            merged["short_change"],
+            merged["margin_balance"],
+            merged["short_balance"],
+            merged["margin_short_ratio"],
+            bullish_score,
+            bearish_score,
+            bullish_reason,
+            bearish_reason,
+            chip_data_source,
+            status,
+            chip_data_date,
+            now,
+        ])
 
-    conn.commit()
-    conn.close()
+    conn.executemany("""
+        INSERT INTO chip_daily
+        (symbol, base_code, trade_date,
+         foreign_buy_sell, investment_trust_buy_sell, dealer_buy_sell,
+         institutional_total_buy_sell,
+         foreign_buy_sell_3d, investment_trust_buy_sell_3d, dealer_buy_sell_3d,
+         institutional_total_buy_sell_3d,
+         margin_change, short_change, margin_balance, short_balance, margin_short_ratio,
+         bullish_chip_score, bearish_chip_score,
+         bullish_chip_reason, bearish_chip_reason,
+         chip_data_source, chip_data_status, chip_data_date, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol, trade_date) DO UPDATE SET
+            base_code = excluded.base_code,
+            foreign_buy_sell = excluded.foreign_buy_sell,
+            investment_trust_buy_sell = excluded.investment_trust_buy_sell,
+            dealer_buy_sell = excluded.dealer_buy_sell,
+            institutional_total_buy_sell = excluded.institutional_total_buy_sell,
+            foreign_buy_sell_3d = excluded.foreign_buy_sell_3d,
+            investment_trust_buy_sell_3d = excluded.investment_trust_buy_sell_3d,
+            dealer_buy_sell_3d = excluded.dealer_buy_sell_3d,
+            institutional_total_buy_sell_3d = excluded.institutional_total_buy_sell_3d,
+            margin_change = excluded.margin_change,
+            short_change = excluded.short_change,
+            margin_balance = excluded.margin_balance,
+            short_balance = excluded.short_balance,
+            margin_short_ratio = excluded.margin_short_ratio,
+            bullish_chip_score = excluded.bullish_chip_score,
+            bearish_chip_score = excluded.bearish_chip_score,
+            bullish_chip_reason = excluded.bullish_chip_reason,
+            bearish_chip_reason = excluded.bearish_chip_reason,
+            chip_data_source = excluded.chip_data_source,
+            chip_data_status = excluded.chip_data_status,
+            chip_data_date = excluded.chip_data_date,
+            updated_at = excluded.updated_at
+    """, output_rows)
+    return len(output_rows)
 
+
+CSV_EXPORT_COLUMNS = [
+    "symbol",
+    "base_code",
+    "name",
+    "market",
+    "bar_time",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "volume",
+    "change_pct",
+    "gap_pct",
+    "ma5",
+    "ma10",
+    "ma20",
+    "ma60",
+    "ma120",
+    "ma_slope_20",
+    "bias20",
+    "rsi14",
+    "k9",
+    "d9",
+    "j9",
+    "dif",
+    "macd",
+    "osc",
+    "williams_r14",
+    "volume_ratio",
+    "vol_std_score",
+    "vwap",
+    "obv",
+    "mfi14",
+    "atr14",
+    "adx14",
+    "plus_di",
+    "minus_di",
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "bb_width",
+    "price_loc_bb",
+    "upper_tail_ratio",
+    "lower_tail_ratio",
+    "day_range_pos",
+    "high_52w",
+    "low_52w",
+    "dist_high_52w_pct",
+    "dist_low_52w_pct",
+    "relative_strength_pct",
+    "beta20",
+    "foreign_buy_sell",
+    "investment_trust_buy_sell",
+    "dealer_buy_sell",
+    "institutional_total_buy_sell",
+    "foreign_buy_sell_3d",
+    "investment_trust_buy_sell_3d",
+    "institutional_total_buy_sell_3d",
+    "margin_change",
+    "short_change",
+    "margin_balance",
+    "short_balance",
+    "margin_short_ratio",
+    "bullish_chip_score",
+    "bearish_chip_score",
+    "chip_data_status",
+    "chip_data_date",
+    "daily_score",
+    "short_term_score",
+    "reason",
+]
+
+
+AI_TRAINING_EXTRA_COLUMNS = [
+    "future_1d_return",
+    "future_3d_return",
+    "max_upside_5d",
+    "drawdown_5d",
+    "buy_signal",
+    "entry_price",
+    "ai_signal_score",
+    "label_ready",
+]
+
+
+def write_query_csv(conn, path, query, columns):
+    cur = conn.execute(query)
+    rows = [dict(zip([desc[0] for desc in cur.description], row)) for row in cur.fetchall()]
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            output = {}
+            for column in columns:
+                output[column] = round_value(row.get(column))
+            writer.writerow(output)
     return len(rows)
 
 
-def export_one_csv():
-    rows = get_all_rows_with_indicators()
-    indicator_count = save_indicator_rows(rows)
+def export_snapshot_aftermarket(conn):
+    columns_sql = ", ".join(CSV_EXPORT_COLUMNS)
+    query = f"""
+        SELECT {columns_sql}
+        FROM v_ai_features_aftermarket
+        WHERE interval_type = '1d'
+          AND bar_time = (
+              SELECT MAX(bar_time)
+              FROM k_bar_features
+              WHERE interval_type = '1d'
+          )
+        ORDER BY daily_score DESC
+    """
+    return write_query_csv(conn, SNAPSHOT_AFTERMARKET_FILE, query, CSV_EXPORT_COLUMNS)
 
-    headers = [
-        "record_type",
-        "symbol",
-        "base_code",
-        "name",
-        "item_type",
-        "interval_type",
-        "bar_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "scan_time",
-        "change_pct",
-        "ma5",
-        "ma10",
-        "ma20",
-        "ma60",
-        "ma120",
-        "bias5",
-        "bias10",
-        "bias20",
-        "bias60",
-        "bias120",
-        "bias5_chg",
-        "bias10_chg",
-        "bias20_chg",
-        "bias60_chg",
-        "bias120_chg",
-        "rsi14",
-        "k9",
-        "d9",
-        "j9",
-        "williams_r14",
-        "dif",
-        "macd",
-        "osc",
-        "volume_ma5",
-        "volume_ratio",
-        "vol_std_score",
-        "vwap",
-        "obv",
-        "vzo14",
-        "money_flow_index",
-        "volume_price_trend",
-        "vzo",
-        "mfi14",
-        "vpt",
-        "day_range_pos",
-        "bb_mid20",
-        "bb_upper20",
-        "bb_lower20",
-        "bb_upper",
-        "bb_middle",
-        "bb_lower",
-        "bb_width",
-        "price_loc_bb",
-        "atr14",
-        "plus_di14",
-        "minus_di14",
-        "plus_di",
-        "minus_di",
-        "adx14",
-        "high_52w",
-        "low_52w",
-        "dist_high_52w_pct",
-        "dist_low_52w_pct",
-        "beta20",
-        "corr20",
-        "relative_strength_pct",
-        "stock_index_ratio",
-        "ma_slope_20",
-        "gap_pct",
-        "tail_ratio",
-        "upper_tail_ratio",
-        "lower_tail_ratio",
-        "short_term_score",
-        "future_1d_return",
-        "future_3d_return",
-        "max_upside_5d",
-        "drawdown_5d",
-        "buy_signal",
-        "entry_price",
-        "ai_signal_score",
-        "label_ready",
-        "label_horizon_bars_1d",
-        "label_horizon_bars_3d",
-        "label_horizon_bars_5d",
-        "note",
-    ]
 
-    with open(EXPORT_FILE, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(headers)
+def export_snapshot_intraday(conn):
+    columns_sql = ", ".join(CSV_EXPORT_COLUMNS)
+    query = f"""
+        SELECT {columns_sql}
+        FROM v_ai_features_intraday v
+        WHERE interval_type = '5m'
+          AND bar_time = (
+              SELECT MAX(f2.bar_time)
+              FROM k_bar_features f2
+              WHERE f2.symbol = v.symbol
+                AND f2.interval_type = '5m'
+          )
+        ORDER BY daily_score DESC
+    """
+    return write_query_csv(conn, SNAPSHOT_INTRADAY_FILE, query, CSV_EXPORT_COLUMNS)
 
-        for row in rows:
-            writer.writerow([
-                row["interval_type"],
-                row["symbol"],
-                row["base_code"],
-                row["name"],
-                row["item_type"],
-                row["interval_type"],
-                row["bar_time"],
-                round_value(row["open"]),
-                round_value(row["high"]),
-                round_value(row["low"]),
-                round_value(row["close"]),
-                round_value(row["volume"]),
-                row["scan_time"],
-                round_value(row.get("change_pct")),
-                round_value(row.get("ma5")),
-                round_value(row.get("ma10")),
-                round_value(row.get("ma20")),
-                round_value(row.get("ma60")),
-                round_value(row.get("ma120")),
-                round_value(row.get("bias5")),
-                round_value(row.get("bias10")),
-                round_value(row.get("bias20")),
-                round_value(row.get("bias60")),
-                round_value(row.get("bias120")),
-                round_value(row.get("bias5_chg")),
-                round_value(row.get("bias10_chg")),
-                round_value(row.get("bias20_chg")),
-                round_value(row.get("bias60_chg")),
-                round_value(row.get("bias120_chg")),
-                round_value(row.get("rsi14")),
-                round_value(row.get("k9")),
-                round_value(row.get("d9")),
-                round_value(row.get("j9")),
-                round_value(row.get("williams_r14")),
-                round_value(row.get("dif")),
-                round_value(row.get("macd")),
-                round_value(row.get("osc")),
-                round_value(row.get("volume_ma5")),
-                round_value(row.get("volume_ratio")),
-                round_value(row.get("vol_std_score")),
-                round_value(row.get("vwap")),
-                round_value(row.get("obv")),
-                round_value(row.get("vzo14")),
-                round_value(row.get("money_flow_index")),
-                round_value(row.get("volume_price_trend")),
-                round_value(row.get("vzo")),
-                round_value(row.get("mfi14")),
-                round_value(row.get("vpt")),
-                round_value(row.get("day_range_pos")),
-                round_value(row.get("bb_mid20")),
-                round_value(row.get("bb_upper20")),
-                round_value(row.get("bb_lower20")),
-                round_value(row.get("bb_upper")),
-                round_value(row.get("bb_middle")),
-                round_value(row.get("bb_lower")),
-                round_value(row.get("bb_width")),
-                round_value(row.get("price_loc_bb")),
-                round_value(row.get("atr14")),
-                round_value(row.get("plus_di14")),
-                round_value(row.get("minus_di14")),
-                round_value(row.get("plus_di")),
-                round_value(row.get("minus_di")),
-                round_value(row.get("adx14")),
-                round_value(row.get("high_52w")),
-                round_value(row.get("low_52w")),
-                round_value(row.get("dist_high_52w_pct")),
-                round_value(row.get("dist_low_52w_pct")),
-                round_value(row.get("beta20")),
-                round_value(row.get("corr20")),
-                round_value(row.get("relative_strength_pct")),
-                round_value(row.get("stock_index_ratio")),
-                round_value(row.get("ma_slope_20")),
-                round_value(row.get("gap_pct")),
-                round_value(row.get("tail_ratio")),
-                round_value(row.get("upper_tail_ratio")),
-                round_value(row.get("lower_tail_ratio")),
-                round_value(row.get("short_term_score")),
-                round_value(row.get("future_1d_return")),
-                round_value(row.get("future_3d_return")),
-                round_value(row.get("max_upside_5d")),
-                round_value(row.get("drawdown_5d")),
-                round_value(row.get("buy_signal")),
-                round_value(row.get("entry_price")),
-                round_value(row.get("ai_signal_score")),
-                round_value(row.get("label_ready")),
-                round_value(row.get("label_horizon_bars_1d")),
-                round_value(row.get("label_horizon_bars_3d")),
-                round_value(row.get("label_horizon_bars_5d")),
-                "Network Ping Test 資料",
-            ])
 
-    return EXPORT_FILE, len(rows), indicator_count
+def export_ai_training(conn):
+    columns = CSV_EXPORT_COLUMNS + AI_TRAINING_EXTRA_COLUMNS
+    columns_sql = ", ".join(columns)
+    query = f"""
+        SELECT {columns_sql}
+        FROM v_ai_features_aftermarket
+        WHERE interval_type = '1d'
+          AND label_ready = 1
+        ORDER BY symbol, bar_time
+    """
+    return write_query_csv(conn, AI_TRAINING_FILE, query, columns)
+
+
+def export_csvs(conn=None):
+    own_conn = conn is None
+    conn = conn or connect_db()
+    try:
+        counts = {
+            SNAPSHOT_AFTERMARKET_FILE: export_snapshot_aftermarket(conn),
+            SNAPSHOT_INTRADAY_FILE: export_snapshot_intraday(conn),
+            AI_TRAINING_FILE: export_ai_training(conn),
+        }
+        return counts
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def display_item_type(item_type):
@@ -1759,7 +2414,7 @@ def display_item_type(item_type):
     return mapping.get(item_type, item_type)
 
 def get_latest_bar_time(symbol, interval_type):
-    conn = sqlite3.connect(DB_NAME)
+    conn = connect_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -1775,18 +2430,20 @@ def get_latest_bar_time(symbol, interval_type):
     return result
 
 def latest_summary():
-    conn = sqlite3.connect(DB_NAME)
+    conn = connect_db()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT symbol, name, interval_type, bar_time, close_price, scan_time
-        FROM k_bars
-        WHERE id IN (
-            SELECT MAX(id)
-            FROM k_bars
-            GROUP BY symbol, interval_type
+        SELECT b.symbol, s.name, b.interval_type, b.bar_time, b.close_price, b.fetch_time
+        FROM k_bars b
+        JOIN symbols s ON s.symbol = b.symbol
+        WHERE b.bar_time = (
+            SELECT MAX(b2.bar_time)
+            FROM k_bars b2
+            WHERE b2.symbol = b.symbol
+              AND b2.interval_type = b.interval_type
         )
-        ORDER BY symbol, interval_type
+        ORDER BY b.symbol, b.interval_type
     """)
 
     rows = cur.fetchall()
@@ -1805,6 +2462,25 @@ def stop_update():
     global stop_scan
     stop_scan = True
     log("收到停止指令，這一筆完成後會停止。")
+
+
+def export_csv_button():
+    result_text.delete("1.0", tk.END)
+    conn = connect_db()
+    init_db(conn)
+    try:
+        all_rows = get_all_rows_with_indicators()
+        feature_count = save_features(conn, all_rows)
+        label_count = save_ai_labels(conn, all_rows)
+        conn.commit()
+        csv_counts = export_csvs(conn)
+    finally:
+        conn.close()
+
+    log(f"SQLite k_bar_features updated: {feature_count} rows")
+    log(f"SQLite ai_labels updated: {label_count} rows")
+    for path, count in csv_counts.items():
+        log(f"CSV 已輸出：{path}，共 {count} 筆資料")
 
 
 def update_all():
@@ -1828,9 +2504,9 @@ def update_all():
     log("模式：慢速單線程 Network Ping Test")
     log("代號：測試節點自動判斷 .TW / .TWO；基準節點與完整遠端代號直接使用")
     log("測試週期：1m / 5m / 30m / 1d / 1wk")
-    log("保存期間：1m 14天、5m 30天、30m 60天、1d 180天、1wk 3年")
-    log("匯出：單一 Network Ping Test CSV")
-    log("分析欄位：MA/RSI/KD/MACD/BB/ATR/ADX/BIAS/VWAP/OBV/VZO/MFI/VPT/Williams%R")
+    log("保存期間：1m 5天、5m 20天、30m 60天、1d 3年、1wk 5年")
+    log("匯出：snapshot_aftermarket.csv / snapshot_intraday.csv / ai_training.csv")
+    log("分析欄位：MA/RSI/KD/MACD/BB/ATR/ADX/BIAS/VWAP/OBV/MFI/Williams%R/籌碼")
     log("Delay：random.uniform(0.8, 1.4)")
     log("=" * 70)
 
@@ -1870,11 +2546,30 @@ def update_all():
         symbol, name, interval_type, bar_time, close_price, scan_time = row
         log(f"{symbol} {name} | {interval_type} | {bar_time} | value {round_value(close_price)}")
 
-    export_file, row_count, indicator_count = export_one_csv()
+    conn = connect_db()
+    init_db(conn)
+    try:
+        all_rows = get_all_rows_with_indicators()
+        feature_count = save_features(conn, all_rows)
+        label_count = save_ai_labels(conn, all_rows)
+        latest_trade_date = get_latest_trade_date(conn)
+
+        log("")
+        log("開始抓取 TWSE/TPEX 官方籌碼資料...")
+        chip_result = fetch_official_chip_data(latest_trade_date)
+        chip_count = save_chip_daily(conn, chip_result, latest_trade_date)
+        conn.commit()
+
+        csv_counts = export_csvs(conn)
+    finally:
+        conn.close()
 
     log("")
-    log(f"SQLite k_bar_indicators updated: {indicator_count} rows")
-    log(f"CSV 已輸出：{export_file}，共 {row_count} 筆 Network Ping Test 資料")
+    log(f"SQLite k_bar_features updated: {feature_count} rows")
+    log(f"SQLite ai_labels updated: {label_count} rows")
+    log(f"SQLite chip_daily updated: {chip_count} rows")
+    for path, count in csv_counts.items():
+        log(f"CSV 已輸出：{path}，共 {count} 筆資料")
     log(f"完成：成功 {success} 筆，失敗 {fail} 筆")
 
 
@@ -1910,6 +2605,15 @@ stop_button = tk.Button(
     height=2,
 )
 stop_button.pack(side=tk.LEFT, padx=8)
+
+export_button = tk.Button(
+    button_frame,
+    text="匯出 CSV",
+    command=export_csv_button,
+    width=20,
+    height=2,
+)
+export_button.pack(side=tk.LEFT, padx=8)
 
 result_text = tk.Text(root, width=150, height=40)
 result_text.pack(padx=10, pady=10)
